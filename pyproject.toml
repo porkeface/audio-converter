@@ -9,4 +9,5 @@ dependencies = [
     "mutagen>=1.47.0",
     "pycryptodome>=3.23.0",
     "pydub>=0.25.1",
+    "tkinterdnd2>=0.4.3",
 ]

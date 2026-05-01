@@ -1,6 +1,7 @@
 """
 音频转换工具 - 图形界面 (GUI)
 使用 tkinter 实现，支持文件拖拽和批量转换
+需要 tkinterdnd2 库支持拖拽功能
 """
 
 import tkinter as tk
@@ -10,6 +11,15 @@ import os
 from pathlib import Path
 from typing import Optional, List
 import sys
+
+# 尝试导入拖拽支持
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    DRAG_DROP_AVAILABLE = True
+except ImportError:
+    DRAG_DROP_AVAILABLE = False
+    print("[警告] tkinterdnd2 未安装，拖拽功能不可用")
+    print("[提示] 使用 'uv add tkinterdnd2' 安装拖拽支持")
 
 from .main import convert_ncm
 from .utils.detector import detect_format
@@ -33,7 +43,8 @@ class AudioConverterUI:
         self._create_widgets()
 
         # 启用拖拽支持
-        self._enable_drag_and_drop()
+        if DRAG_DROP_AVAILABLE:
+            self._enable_drag_and_drop()
 
         # 转换线程
         self.convert_thread: Optional[threading.Thread] = None
@@ -69,7 +80,8 @@ class AudioConverterUI:
         main_frame.pack(fill='both', expand=True, padx=20, pady=10)
 
         # ========== 输入文件区域 ==========
-        input_frame = tk.LabelFrame(main_frame, text="输入文件（支持多选和拖拽）", font=("Arial", 10, "bold"), bg='white')
+        drag_hint = "（支持拖拽文件到此处）" if DRAG_DROP_AVAILABLE else "（请使用按钮选择文件）"
+        input_frame = tk.LabelFrame(main_frame, text=f"输入文件 {drag_hint}", font=("Arial", 10, "bold"), bg='white')
         input_frame.pack(fill='both', expand=True, padx=15, pady=15)
 
         # 按钮区域
@@ -78,7 +90,7 @@ class AudioConverterUI:
 
         tk.Button(
             button_frame,
-            text="📁 选择文件",
+            text="📁 选择文件（可多选）",
             command=self._select_input_files,
             bg='#4CAF50',
             fg='white',
@@ -133,14 +145,24 @@ class AudioConverterUI:
         self.file_listbox.bind('<Double-Button-1>', lambda e: self._remove_selected())
 
         # 拖拽提示标签
-        self.drop_label = tk.Label(
-            input_frame,
-            text="💡 提示：可以直接拖拽文件到此处",
-            font=("Arial", 8),
-            bg='white',
-            fg='#999'
-        )
-        self.drop_label.pack(pady=(0, 5))
+        if DRAG_DROP_AVAILABLE:
+            self.drop_label = tk.Label(
+                input_frame,
+                text="💡 提示：可以直接拖拽文件到文件列表框中",
+                font=("Arial", 8),
+                bg='white',
+                fg='#999'
+            )
+            self.drop_label.pack(pady=(0, 5))
+        else:
+            self.drop_label = tk.Label(
+                input_frame,
+                text="⚠️ 拖拽功能不可用，请使用 '选择文件' 按钮",
+                font=("Arial", 8),
+                bg='white',
+                fg='#f44336'
+            )
+            self.drop_label.pack(pady=(0, 5))
 
         # ========== 输出选项 ==========
         output_frame = tk.LabelFrame(main_frame, text="输出选项", font=("Arial", 10, "bold"), bg='white')
@@ -231,31 +253,20 @@ class AudioConverterUI:
         self.status_label.pack(fill='x', padx=10, pady=3)
 
     def _enable_drag_and_drop(self):
-        """启用文件拖拽功能（Windows）"""
+        """启用文件拖拽功能（使用 tkinterdnd2）"""
         try:
-            # 使用 Windows API 实现拖拽
-            import ctypes
-            from ctypes import wintypes
-
-            # 定义必要的 Windows API
-            ole32 = ctypes.windll.ole32
-            shell32 = ctypes.windll.shell32
-
-            # 注册拖拽目标
-            self.root.update_idletasks()
-            hwnd = int(self.root.winfo_id())
-
-            # 使用 tkinter 的 WM_DROPFILES 消息
-            self.root.drop_target_register(tk.DND_FILES)
-            self.root.dnd_bind('<<Drop>>', self._on_drop)
-            self._log("[信息] 文件拖拽功能已启用")
+            # 为文件列表框注册拖拽目标
+            self.file_listbox.drop_target_register(DND_FILES)
+            self.file_listbox.dnd_bind('<<Drop>>', self._on_drop)
+            self._log("[信息] 文件拖拽功能已启用 ✓")
         except Exception as e:
             self._log(f"[警告] 无法启用拖拽功能: {e}")
             self._log("[提示] 请使用 '选择文件' 按钮添加文件")
 
     def _on_drop(self, event):
         """处理文件拖拽事件"""
-        files = self.root.tk.splitlist(event.data)
+        files = self.root.splitlist(event.data)
+        added_count = 0
         for f in files:
             # 去掉可能的花括号（Windows 路径有时会有）
             f = f.strip('{}')
@@ -263,7 +274,16 @@ class AudioConverterUI:
                 self.input_files.append(f)
                 self.file_listbox.insert(tk.END, Path(f).name)
                 self._log(f"[添加文件] {Path(f).name}")
-        self._update_status(f"已添加 {len(self.input_files)} 个文件")
+                added_count += 1
+
+        if added_count > 0:
+            self._update_status(f"已添加 {len(self.input_files)} 个文件")
+            # 自动设置输出目录
+            if not self.output_dir_var.get() and self.input_files:
+                output_dir = Path(self.input_files[0]).parent
+                self.output_dir_var.set(str(output_dir))
+        else:
+            self._log("[提示] 文件已存在列表中")
 
     def _select_input_files(self):
         """选择多个输入文件"""
@@ -276,19 +296,21 @@ class AudioConverterUI:
             ]
         )
         if filenames:
+            added_count = 0
             for f in filenames:
                 if f not in self.input_files:
                     self.input_files.append(f)
                     self.file_listbox.insert(tk.END, Path(f).name)
                     self._log(f"[添加文件] {Path(f).name}")
+                    added_count += 1
 
-            self._update_status(f"已添加 {len(self.input_files)} 个文件")
-
-            # 自动设置输出目录为第一个文件的目录
-            if not self.output_dir_var.get() and self.input_files:
-                output_dir = Path(self.input_files[0]).parent
-                self.output_dir_var.set(str(output_dir))
-                self._log(f"[输出目录] {output_dir}")
+            if added_count > 0:
+                self._update_status(f"已添加 {len(self.input_files)} 个文件")
+                # 自动设置输出目录
+                if not self.output_dir_var.get() and self.input_files:
+                    output_dir = Path(self.input_files[0]).parent
+                    self.output_dir_var.set(str(output_dir))
+                    self._log(f"[输出目录] {output_dir}")
 
     def _clear_file_list(self):
         """清空文件列表"""
@@ -347,6 +369,15 @@ class AudioConverterUI:
         if not Path(output_dir).exists():
             messagebox.showerror("错误", f"输出目录不存在:\n{output_dir}")
             return
+
+        # 确认对话框
+        if len(self.input_files) > 1:
+            result = messagebox.askyesno(
+                "确认批量转换",
+                f"即将转换 {len(self.input_files)} 个文件\n\n输出目录: {output_dir}\n输出格式: {self.output_format.get().upper()}\n\n是否继续？"
+            )
+            if not result:
+                return
 
         # 禁用按钮，防止重复点击
         self.converting = True
@@ -422,7 +453,7 @@ class AudioConverterUI:
 
         messagebox.showinfo(
             "批量转换完成",
-            f"转换完成！\n\n成功: {success_count} 个文件\n失败: {fail_count} 个文件"
+            f"转换完成！\n\n成功: {success_count} 个文件\n失败: {fail_count} 个文件\n\n输出目录:\n{self.output_dir_var.get()}"
         )
 
         self._log("=" * 60)
@@ -431,8 +462,16 @@ class AudioConverterUI:
 
 
 def main():
-    """启动 GUI"""
-    root = tk.Tk()
+    """启动 GUI（使用 TkinterDnD 支持拖拽）"""
+    if DRAG_DROP_AVAILABLE:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
+        messagebox.showwarning(
+            "拖拽功能不可用",
+            "未检测到 tkinterdnd2 库，拖拽功能不可用。\n\n请使用 'uv add tkinterdnd2' 安装拖拽支持。"
+        )
+
     app = AudioConverterUI(root)
     root.mainloop()
 
