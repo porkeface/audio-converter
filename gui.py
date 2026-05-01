@@ -1,5 +1,6 @@
 """
 音频转换工具 - GUI 启动脚本
+支持 customtkinter 和 tkinterdnd2 拖拽
 """
 
 import sys
