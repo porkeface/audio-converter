@@ -1,10 +1,70 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+# ============================================
+# 音频转换工具 - 忽略文件配置
+# ============================================
 
-# Virtual environments
-.venv
+# Python 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# Python 缓存和编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 音频文件（源文件和输出文件）
+# NCM 加密格式
+*.ncm
+
+# 输出音频格式
+*.flac
+*.mp3
+*.wav
+*.aac
+*.ogg
+*.m4a
+*.wma
+
+# 测试音频文件（如果有）
+test_audio/
+samples/
+*.audio
+
+# 日志文件
+*.log
+logs/
+
+# IDE 和编辑器配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+
+# 项目特定文件
+output/
+temp/
+tmp/
+
+# uv 包管理器缓存
+.uv/
+*.uv.lock
+
+# 如果是 Windows 批处理文件（如果想忽略）
+# *.bat
+
+# 文档和说明（可选，通常保留）
+# *.md
+# !README.md
+# !GUI使用说明.md
