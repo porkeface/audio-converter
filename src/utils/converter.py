@@ -16,7 +16,7 @@ from typing import Optional
 
 # FFmpeg 路径：优先使用项目目录下的，其次使用系统 PATH
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
-_FFMPEG_DIR = _PROJECT_ROOT / "ffmpeg-8.1-full_build" / "bin"
+_FFMPEG_DIR = _PROJECT_ROOT / "vendor" / "ffmpeg"
 FFMPEG_PATH = str(_FFMPEG_DIR / "ffmpeg.exe") if _FFMPEG_DIR.joinpath("ffmpeg.exe").exists() else "ffmpeg"
 FFPROBE_PATH = str(_FFMPEG_DIR / "ffprobe.exe") if _FFMPEG_DIR.joinpath("ffprobe.exe").exists() else "ffprobe"
 
