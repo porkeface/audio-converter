@@ -18,7 +18,8 @@ try:
 except ImportError:
     DRAG_DROP_AVAILABLE = False
 
-from .main import convert_file
+from .main import convert_file, get_metadata_str
+from .utils.detector import detect_format
 
 # --- 动态全局样式配置 (Light, Dark) ---
 # 格式: (Light Mode, Dark Mode)
@@ -94,6 +95,9 @@ class FileCard(ctk.CTkFrame):
 
     def set_status(self, text, color=None):
         self.status_label.configure(text=text, text_color=color or COLORS["text_dim"])
+
+    def set_detail(self, text):
+        self.detail_label.configure(text=text)
 
 class AudioConverterUI:
     def __init__(self, root):
@@ -302,7 +306,7 @@ class AudioConverterUI:
         self.progress.set(0)
 
     def _select_files(self):
-        files = filedialog.askopenfilenames(title="选择音频文件", filetypes=[("NCM 文件", "*.ncm"), ("所有文件", "*.*")])
+        files = filedialog.askopenfilenames(title="选择音频文件", filetypes=[("加密音频", "*.ncm *.mflac"), ("所有文件", "*.*")])
         for f in files:
             self._add_file_to_ui(f)
 
@@ -332,17 +336,28 @@ class AudioConverterUI:
     def _conversion_worker(self, out_dir):
         files = list(self.input_files.items())
         total = len(files)
-        
+
         for i, (path, card) in enumerate(files):
             card.set_status("正在转换...", COLORS["accent"])
             try:
                 final_out = out_dir or str(Path(path).parent)
                 output_path = str(Path(final_out) / f"{Path(path).stem}.{self.output_format.get()}")
-                
-                # 执行转换
-                convert_file(path, output_path)
-                
-                card.set_status("✓ 已完成", COLORS["success"])
+
+                success = convert_file(path, output_path)
+                if success:
+                    # 解密后提取元数据并显示在卡片上
+                    meta_str = ""
+                    try:
+                        fmt = detect_format(path)
+                        if fmt:
+                            meta_str = get_metadata_str(fmt)
+                    except Exception:
+                        pass
+                    if meta_str:
+                        card.set_detail(meta_str)
+                    card.set_status("✓ 已完成", COLORS["success"])
+                else:
+                    card.set_status("✗ 失败", COLORS["danger"])
             except Exception as e:
                 card.set_status("✗ 失败", COLORS["danger"])
             

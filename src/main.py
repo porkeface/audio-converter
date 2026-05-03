@@ -15,6 +15,7 @@
 
 import sys
 import argparse
+import traceback
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -59,20 +60,35 @@ def convert_file(
 
     try:
         data = fmt.decrypt()
-    except ValueError as e:
+    except Exception as e:
         print(f"解密失败: {e}")
+        traceback.print_exc()
         return False
 
-    # 确定输出路径
+    # 根据实际音频数据检测格式，确定正确的文件扩展名
+    actual_ext = _detect_audio_format_data(data)
     if output_file is None:
-        ext = _get_output_ext(fmt)
-        output_file = str(fmt.file_path.parent / (fmt.file_path.stem + ext))
+        output_file = str(fmt.file_path.parent / (fmt.file_path.stem + '.' + actual_ext))
+    else:
+        # 用户指定了输出路径，但扩展名可能与实际格式不匹配
+        # 例如用户选了 FLAC 但实际是 MP3 → 改为正确扩展名
+        out_path = Path(output_file)
+        if out_path.suffix.lower() != '.' + actual_ext:
+            output_file = str(out_path.with_suffix('.' + actual_ext))
+            print(f"实际格式为 {actual_ext}，输出文件: {output_file}")
 
     with open(output_file, 'wb') as f:
         f.write(data)
 
     print(f"解密成功: {output_file} ({len(data):,} 字节)")
-    _show_metadata(fmt)
+
+    _embed_audio_metadata(output_file, fmt)
+
+    try:
+        _show_metadata(fmt)
+    except Exception as e:
+        print(f"元数据显示失败（不影响输出）: {e}")
+
     return True
 
 
@@ -141,11 +157,138 @@ def _show_metadata(fmt) -> None:
         meta = fmt.get_metadata()
         if meta:
             print(f"  歌曲: {meta.get('musicName', '-')}")
-            artist = meta.get('artist', ['-'])
-            if isinstance(artist, list):
-                artist = ', '.join(artist)
-            print(f"  艺术家: {artist}")
+            artist = meta.get('artist', [])
+            names = []
+            for a in artist:
+                if isinstance(a, list):
+                    names.append(a[0])
+                else:
+                    names.append(str(a))
+            print(f"  艺术家: {', '.join(names) if names else '-'}")
             print(f"  专辑: {meta.get('album', '-')}")
+
+
+def get_metadata_str(fmt) -> str:
+    """从解密后的格式对象中提取元数据摘要字符串。"""
+    if not isinstance(fmt, NCMFormat):
+        return ""
+    meta = fmt.get_metadata()
+    if not meta:
+        return ""
+    parts = []
+    name = meta.get('musicName')
+    if name:
+        parts.append(name)
+    artist = meta.get('artist', [])
+    names = []
+    for a in artist:
+        if isinstance(a, list):
+            names.append(a[0])
+        else:
+            names.append(str(a))
+    if names:
+        parts.append(', '.join(names))
+    album = meta.get('album')
+    if album:
+        parts.append(album)
+    return ' · '.join(parts)
+
+
+def _detect_audio_format(file_path: str) -> str:
+    """根据文件头检测实际音频格式（flac/mp3/wav）。"""
+    try:
+        with open(file_path, 'rb') as f:
+            header = f.read(4)
+        if header == b'fLaC':
+            return 'flac'
+        if header[:3] == b'ID3' or header[:2] == b'\xff\xfb':
+            return 'mp3'
+        if header == b'RIFF':
+            return 'wav'
+    except Exception:
+        pass
+    return 'flac'
+
+
+def _detect_audio_format_data(data: bytes) -> str:
+    """根据音频数据的前几个字节检测格式。"""
+    if data[:4] == b'fLaC':
+        return 'flac'
+    if data[:3] == b'ID3' or data[:2] == b'\xff\xfb':
+        return 'mp3'
+    if data[:4] == b'RIFF':
+        return 'wav'
+    return 'flac'
+
+
+def _extract_artist_names(artist_list) -> str:
+    """从 NCM 元数据的 artist 字段提取艺术家名称字符串。"""
+    names = []
+    for a in (artist_list or []):
+        if isinstance(a, list):
+            names.append(a[0])
+        else:
+            names.append(str(a))
+    return ', '.join(names)
+
+
+def _embed_audio_metadata(output_path: str, fmt) -> None:
+    """将元数据和封面写入输出音频文件（FLAC/MP3）。"""
+    if not isinstance(fmt, NCMFormat):
+        return
+
+    meta = fmt.get_metadata()
+    cover = fmt.get_cover_image()
+
+    # 没有 NCM 元数据且没有封面 → 跳过，保留音频流中已有的 Vorbis/ID3 标签
+    has_useful_meta = meta and (meta.get('musicName') or meta.get('artist') or meta.get('album'))
+    if not has_useful_meta and not cover:
+        return
+
+    try:
+        import mutagen
+        audio = mutagen.File(output_path, easy=False)
+        if audio is None:
+            print(f"[-] 无法识别音频格式: {output_path}")
+            return
+
+        title = meta.get('musicName', '') if meta else ''
+        artist_str = _extract_artist_names(meta.get('artist', []) if meta else [])
+        album = meta.get('album', '') if meta else ''
+
+        if isinstance(audio, mutagen.flac.FLAC):
+            from mutagen.flac import Picture
+            if title:
+                audio['title'] = [title]
+            if artist_str:
+                audio['artist'] = [artist_str]
+            if album:
+                audio['album'] = [album]
+            if cover:
+                pic = Picture()
+                pic.type = 3
+                pic.mime = 'image/jpeg'
+                pic.data = cover
+                audio.clear_pictures()
+                audio.add_picture(pic)
+            audio.save()
+            print(f"[+] 已写入 FLAC 元数据")
+
+        elif isinstance(audio, mutagen.mp3.MP3):
+            from mutagen.id3 import APIC, TIT2, TPE1, TALB
+            if title:
+                audio.tags.add(TIT2(encoding=3, text=[title]))
+            if artist_str:
+                audio.tags.add(TPE1(encoding=3, text=[artist_str]))
+            if album:
+                audio.tags.add(TALB(encoding=3, text=[album]))
+            if cover:
+                audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover))
+            audio.save()
+            print(f"[+] 已写入 MP3 元数据")
+
+    except Exception as e:
+        print(f"[-] 写入元数据失败（不影响音频）: {e}")
 
 
 # ──────────────────────────────────────────────
