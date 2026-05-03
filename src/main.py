@@ -1,171 +1,236 @@
 """
-音频转换工具 - 真正可用的版本
+音频格式转换工具
+
+支持格式：
+  输入: NCM (网易云音乐), mflac (QQ 音乐)
+  输出: FLAC, MP3, WAV
 
 用法:
-    python -m src.main song.ncm [output.flac]
-    python -m src.main song.ncm -f mp3
+  python -m src.main convert song.ncm
+  python -m src.main convert song.mflac
+  python -m src.main convert song.mflac --key key.bin
+  python -m src.main frida song.mflac
+  python -m src.main batch D:\music
 """
 
 import sys
-import os
+import argparse
 from pathlib import Path
+from typing import Optional, Tuple, List
 
-# 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-from src.formats import NCMFormat
+from src.formats import NCMFormat, MflacFormat
 from src.utils.detector import detect_format
 
 
-def print_banner():
-    """打印欢迎信息"""
-    print("=" * 60)
-    print("  音频格式转换工具 (Audio Converter)")
-    print("  支持: NCM → FLAC/MP3/WAV")
-    print("=" * 60)
-    print()
+# ──────────────────────────────────────────────
+# 核心转换
+# ──────────────────────────────────────────────
 
-
-def convert_ncm(input_file: str, output_file: str = None, output_format: str = None):
-    """
-    转换 NCM 文件
-
-    参数:
-        input_file: 输入文件路径
-        output_file: 输出文件路径（可选）
-        output_format: 输出格式（可选）
-    """
-    input_path = Path(input_file)
-
-    if not input_path.exists():
-        print(f"[错误] 文件不存在: {input_file}")
-        return False
-
-    # 检测格式
-    fmt = detect_format(str(input_path))
+def convert_file(
+    input_file: str,
+    output_file: Optional[str] = None,
+    key_file: Optional[str] = None,
+) -> bool:
+    """自动检测格式并解密。"""
+    fmt = detect_format(input_file)
 
     if fmt is None:
-        print("[错误] 无法识别的格式，或不是加密格式")
+        # 检查是否是标准音频
+        with open(input_file, 'rb') as f:
+            header = f.read(4)
+        if header in (b"fLaC", b"ID3", b"RIFF") or header[:2] == b'\xff\xf1':
+            print(f"标准音频格式，无需解密: {input_file}")
+            return True
+        print(f"无法识别的格式: {input_file}")
         return False
 
-    print(f"\n[信息] 检测到格式: {fmt.FORMAT_NAME}")
-    print(f"[信息] 文件: {input_path.name}")
-    print()
+    print(f"检测到格式: {fmt.FORMAT_NAME}")
+    print(f"文件: {fmt.file_path.name}")
+
+    # mflac: 有密钥用密钥，没有就走 Frida
+    if isinstance(fmt, MflacFormat):
+        if key_file:
+            with open(key_file, 'rb') as f:
+                fmt.set_key(f.read())
+            print(f"已加载密钥: {key_file}")
+        else:
+            print("无密钥，尝试 Frida 解密...")
+            return frida_convert(input_file, output_file)
 
     try:
-        # 解密
-        print("[*] 开始解密...")
-        decrypted_data = fmt.decrypt()
-
-        # 获取元数据
-        metadata = fmt.get_metadata()
-        if metadata:
-            print(f"\n[歌曲信息]")
-            print(f"  歌曲名: {metadata.get('musicName', 'Unknown')}")
-            print(f"  艺术家: {metadata.get('artist', ['Unknown'])[0] if isinstance(metadata.get('artist'), list) else 'Unknown'}")
-            print(f"  专辑: {metadata.get('album', 'Unknown')}")
-            print()
-
-        # 确定输出文件
-        if output_file is None:
-            # 自动生成输出文件名
-            if output_format:
-                ext = output_format
-            else:
-                # 根据原始格式决定
-                original_format = fmt._original_format or 'flac'
-                ext = original_format
-            output_file = input_path.stem + '.' + ext
-
-        # 保存解密后的文件
-        print(f"[*] 保存文件: {output_file}")
-        with open(output_file, 'wb') as f:
-            f.write(decrypted_data)
-
-        print(f"\n[成功] 文件已保存: {output_file}")
-        print(f"[信息] 文件大小: {len(decrypted_data)} 字节")
-
-        # 如果格式需要转换（比如原始是 MP3，但要输出 FLAC）
-        if output_format and fmt._original_format != output_format:
-            print(f"\n[*] 需要转码: {fmt._original_format} -> {output_format}")
-            print("[*] 调用 FFmpeg 进行转码...")
-
-            # 临时文件
-            temp_file = output_file + '.temp'
-            os.rename(output_file, temp_file)
-
-            try:
-                from src.utils.converter import convert_audio
-                success = convert_audio(temp_file, output_file, output_format)
-                os.remove(temp_file)  # 删除临时文件
-
-                if success:
-                    print(f"[成功] 转码完成: {output_file}")
-                else:
-                    print("[警告] 转码失败，保留原始文件")
-                    os.rename(temp_file, output_file)
-            except Exception as e:
-                print(f"[错误] 转码失败: {e}")
-                if os.path.exists(temp_file):
-                    os.rename(temp_file, output_file)
-
-        return True
-
-    except Exception as e:
-        print(f"\n[错误] 转换失败: {e}")
-        import traceback
-        traceback.print_exc()
+        data = fmt.decrypt()
+    except ValueError as e:
+        print(f"解密失败: {e}")
         return False
 
+    # 确定输出路径
+    if output_file is None:
+        ext = _get_output_ext(fmt)
+        output_file = str(fmt.file_path.parent / (fmt.file_path.stem + ext))
+
+    with open(output_file, 'wb') as f:
+        f.write(data)
+
+    print(f"解密成功: {output_file} ({len(data):,} 字节)")
+    _show_metadata(fmt)
+    return True
+
+
+def frida_convert(input_file: str, output_file: Optional[str] = None) -> bool:
+    """通过 Frida 解密 mflac（需要 QQ 音乐运行）。"""
+    from src.formats.frida_decrypt import decode_mflac
+    success, result = decode_mflac(input_file, output_file)
+    return success
+
+
+def batch_convert(
+    input_dir: str,
+    output_dir: Optional[str] = None,
+    key_file: Optional[str] = None,
+) -> Tuple[int, int]:
+    """批量解密目录下所有支持的文件。"""
+    input_path = Path(input_dir)
+    if output_dir is None:
+        output_dir = str(input_path / "converted")
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    extensions = ('.mflac', '.ncm')
+    files: List[Path] = []
+    for ext in extensions:
+        files.extend(input_path.glob(f'*{ext}'))
+        files.extend(input_path.glob(f'*{ext.upper()}'))
+
+    if not files:
+        print("未找到支持的文件 (.mflac, .ncm)")
+        return 0, 0
+
+    print(f"找到 {len(files)} 个文件")
+
+    success = 0
+    failed = 0
+    for f in sorted(files):
+        dst = str(Path(output_dir) / (f.stem + '.flac'))
+        print(f"\n{'='*50}")
+        print(f"处理: {f.name}")
+        try:
+            if convert_file(str(f), dst, key_file):
+                success += 1
+            else:
+                failed += 1
+        except Exception as e:
+            print(f"失败: {e}")
+            failed += 1
+
+    print(f"\n{'='*50}")
+    print(f"完成: {success} 成功, {failed} 失败")
+    return success, failed
+
+
+# ──────────────────────────────────────────────
+# 辅助函数
+# ──────────────────────────────────────────────
+
+def _get_output_ext(fmt) -> str:
+    if isinstance(fmt, NCMFormat):
+        return '.' + (fmt._original_format or 'flac')
+    return '.flac'
+
+
+def _show_metadata(fmt) -> None:
+    if isinstance(fmt, NCMFormat):
+        meta = fmt.get_metadata()
+        if meta:
+            print(f"  歌曲: {meta.get('musicName', '-')}")
+            artist = meta.get('artist', ['-'])
+            if isinstance(artist, list):
+                artist = ', '.join(artist)
+            print(f"  艺术家: {artist}")
+            print(f"  专辑: {meta.get('album', '-')}")
+
+
+# ──────────────────────────────────────────────
+# CLI 入口
+# ──────────────────────────────────────────────
 
 def main():
-    """主函数"""
-    import argparse
-
-    print_banner()
-
     parser = argparse.ArgumentParser(
-        description="音频格式转换工具",
+        description="音频解密工具 — 支持 NCM (网易云) 和 mflac (QQ 音乐)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 转换 NCM 到 FLAC (自动检测原始格式)
-  python -m src.main song.ncm
+  # 转换 NCM（自动检测原始格式）
+  python -m src.main convert song.ncm
 
-  # 指定输出文件
-  python -m src.main song.ncm output.flac
+  # 转换 mflac（需要密钥）
+  python -m src.main convert song.mflac -k key.bin
 
-  # 转换到 MP3 格式
-  python -m src.main song.ncm -f mp3
+  # 通过 Frida 解密 mflac（需要 QQ 音乐运行）
+  python -m src.main frida song.mflac
 
-  # 查看支持的格式
-  python -m src.main --list-formats
+  # 批量转换
+  python -m src.main batch D:\\music\\encrypted
         """
     )
 
-    parser.add_argument("input", nargs="?", help="输入文件 (NCM 等)")
-    parser.add_argument("output", nargs="?", help="输出文件 (可选)")
-    parser.add_argument("-f", "--format", help="输出格式 (flac/mp3/wav)")
-    parser.add_argument("-l", "--list-formats", action="store_true", help="列出支持的格式")
+    sub = parser.add_subparsers(dest='command')
+
+    # convert — 自动检测 + 解密
+    p = sub.add_parser('convert', help='自动检测格式并解密')
+    p.add_argument('input', help='输入文件')
+    p.add_argument('output', nargs='?', help='输出文件（可选）')
+    p.add_argument('-k', '--key', help='密钥文件（mflac 离线解密用）')
+
+    # frida — 通过 Frida 解密 mflac
+    p = sub.add_parser('frida', help='通过 Frida 解密 mflac（需 QQ 音乐运行）')
+    p.add_argument('input', help='输入 mflac 文件')
+    p.add_argument('output', nargs='?', help='输出 flac 文件')
+
+    # batch — 批量转换
+    p = sub.add_parser('batch', help='批量解密目录下所有文件')
+    p.add_argument('input_dir', help='输入目录')
+    p.add_argument('output_dir', nargs='?', help='输出目录（可选）')
+    p.add_argument('-k', '--key', help='密钥文件')
+
+    # extract-key — 提取密钥
+    p = sub.add_parser('extract-key', help='从 mflac/flac 对提取密钥')
+    p.add_argument('mflac', help='mflac 文件')
+    p.add_argument('flac', help='对应的 flac 文件')
+    p.add_argument('output', help='输出密钥文件')
+
+    # analyze — 分析文件
+    p = sub.add_parser('analyze', help='分析文件格式')
+    p.add_argument('input', help='输入文件')
 
     args = parser.parse_args()
 
-    if args.list_formats:
-        print("[支持的格式]")
-        print("  输入: NCM (网易云音乐)")
-        print("  输出: FLAC, MP3, WAV")
-        print()
-        return
-
-    if not args.input:
+    if args.command is None:
         parser.print_help()
-        return
+        sys.exit(1)
 
-    # 执行转换
-    success = convert_ncm(args.input, args.output, args.format)
+    if args.command == 'convert':
+        sys.exit(0 if convert_file(args.input, args.output, args.key) else 1)
 
-    sys.exit(0 if success else 1)
+    elif args.command == 'frida':
+        sys.exit(0 if frida_convert(args.input, args.output) else 1)
+
+    elif args.command == 'batch':
+        s, f = batch_convert(args.input_dir, args.output_dir, args.key)
+        sys.exit(0 if f == 0 else 1)
+
+    elif args.command == 'extract-key':
+        fmt = MflacFormat(args.mflac)
+        key = fmt.extract_key_from_pair(args.flac)
+        with open(args.output, 'wb') as fh:
+            fh.write(key)
+        print(f"密钥已提取: {len(key):,} 字节 -> {args.output}")
+
+    elif args.command == 'analyze':
+        fmt = detect_format(args.input)
+        if fmt is None:
+            print(f"无法识别: {args.input}")
+        else:
+            for k, v in fmt.get_format_info().items():
+                print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":

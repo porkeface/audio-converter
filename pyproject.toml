@@ -1,14 +1,24 @@
 [project]
 name = "audio-converter"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "音频解密工具 — 支持 NCM (网易云) 和 mflac (QQ 音乐)"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "click>=8.1.8",
-    "customtkinter>=5.2.2",
-    "mutagen>=1.47.0",
     "pycryptodome>=3.23.0",
-    "pydub>=0.25.1",
+    "frida>=17.9.5",
+    "frida-tools>=14.8.2",
+    "customtkinter>=5.2.2",
     "tkinterdnd2>=0.4.3",
+    "pydub>=0.25.1",
+    "mutagen>=1.47.0",
 ]
+
+[project.scripts]
+audio-converter = "src.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100

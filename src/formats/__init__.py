@@ -2,5 +2,6 @@
 
 from .base import AudioFormat
 from .ncm import NCMFormat
+from .mflac import MflacFormat
 
-__all__ = ['AudioFormat', 'NCMFormat']
+__all__ = ['AudioFormat', 'NCMFormat', 'MflacFormat']

@@ -18,7 +18,7 @@ try:
 except ImportError:
     DRAG_DROP_AVAILABLE = False
 
-from .main import convert_ncm
+from .main import convert_file
 
 # --- 动态全局样式配置 (Light, Dark) ---
 # 格式: (Light Mode, Dark Mode)
@@ -340,7 +340,7 @@ class AudioConverterUI:
                 output_path = str(Path(final_out) / f"{Path(path).stem}.{self.output_format.get()}")
                 
                 # 执行转换
-                convert_ncm(path, output_path, output_format=self.output_format.get())
+                convert_file(path, output_path)
                 
                 card.set_status("✓ 已完成", COLORS["success"])
             except Exception as e:
