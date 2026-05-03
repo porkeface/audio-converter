@@ -68,17 +68,60 @@ def convert_file(
 
     # 根据实际音频数据检测格式，确定正确的文件扩展名
     actual_ext = _detect_audio_format_data(data)
+
+    # 确定用户期望的输出格式和最终输出路径
+    _known_exts = {'.flac', '.mp3', '.wav', '.ogg', '.m4a', '.ncm', '.mflac', '.mgg', '.tmp'}
+    desired_ext = None  # 用户期望的格式（None 表示"默认"，即使用实际格式）
+
     if output_file is None:
         output_file = str(fmt.file_path.parent / (fmt.file_path.stem + '.' + actual_ext))
     else:
-        # 用户指定了输出路径，但扩展名可能与实际格式不匹配
-        out_path = Path(output_file)
-        if out_path.suffix.lower() != '.' + actual_ext:
-            output_file = str(out_path.with_suffix('.' + actual_ext))
-            print(f"实际格式为 {actual_ext}，输出文件: {output_file}")
+        # 从用户指定的路径中提取期望的扩展名
+        # 不使用 Path.stem / Path.suffix（会错误截断含点号的文件名，如 "G.E.M.邓紫棋"）
+        fname = Path(output_file).name
+        last_dot = fname.rfind('.')
+        if last_dot > 0 and fname[last_dot:].lower() in _known_exts:
+            desired_ext = fname[last_dot:].lower().lstrip('.')
+            base_name = fname[:last_dot]
+        else:
+            # 无已知扩展名（"默认"模式或文件名含点号）
+            desired_ext = None
+            base_name = fname
 
-    with open(output_file, 'wb') as f:
-        f.write(data)
+        if desired_ext is None:
+            # "默认"模式：使用实际格式
+            output_file = str(Path(output_file).parent / (base_name + '.' + actual_ext))
+        else:
+            # 用户指定了格式：最终路径使用用户指定的格式
+            output_file = str(Path(output_file).parent / (base_name + '.' + desired_ext))
+
+    # 判断是否需要 FFmpeg 转码
+    need_convert = desired_ext is not None and desired_ext != actual_ext
+
+    if need_convert:
+        # 需要转码：先写入临时文件，再用 FFmpeg 转换
+        tmp_path = output_file + '.tmp.' + actual_ext
+        with open(tmp_path, 'wb') as f:
+            f.write(data)
+        print(f"解密完成，实际格式: {actual_ext}，正在转换为 {desired_ext}...")
+
+        from src.utils.converter import convert_audio
+        if convert_audio(tmp_path, output_file, desired_ext):
+            print(f"转换成功: {output_file}")
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        else:
+            # FFmpeg 转换失败，保留实际格式的文件
+            fallback = str(Path(output_file).parent / (base_name + '.' + actual_ext))
+            os.replace(tmp_path, fallback)
+            output_file = fallback
+            print(f"FFmpeg 转换失败，保留原始格式: {output_file}")
+    else:
+        # 不需要转码：直接写入
+        with open(output_file, 'wb') as f:
+            f.write(data)
 
     print(f"解密成功: {output_file} ({len(data):,} 字节)")
 
@@ -95,21 +138,76 @@ def convert_file(
 def frida_convert(input_file: str, output_file: Optional[str] = None) -> Optional[str]:
     """通过 Frida 解密 mflac/mgg（需要 QQ 音乐运行）。返回实际输出路径。"""
     from src.formats.frida_decrypt import decode_mflac
-    success, result = decode_mflac(input_file, output_file)
 
-    if not success or not result or not os.path.exists(result):
+    # 先确定用户期望的输出格式
+    _known_exts = {'.flac', '.mp3', '.wav', '.ogg', '.m4a', '.ncm', '.mflac', '.mgg', '.tmp'}
+    desired_ext = None
+    if output_file:
+        fname = Path(output_file).name
+        last_dot = fname.rfind('.')
+        if last_dot > 0 and fname[last_dot:].lower() in _known_exts:
+            desired_ext = fname[last_dot:].lower().lstrip('.')
+
+    # 确定 Frida 的输出目标和最终输出路径
+    # 关键：Frida 写入的文件不能和 FFmpeg 输出是同一个文件，否则报 "Output same as Input"
+    if output_file:
+        out_parent = Path(output_file).parent
+        fname = Path(output_file).name
+        last_dot = fname.rfind('.')
+        if last_dot > 0 and fname[last_dot:].lower() in _known_exts:
+            base_name = fname[:last_dot]
+        else:
+            base_name = fname
+        # Frida 写入临时文件，FFmpeg 再转为最终格式
+        frida_output = str(out_parent / (base_name + '.tmp.frida'))
+        final_dir = out_parent
+    else:
+        base_name = Path(input_file).stem
+        final_dir = Path(input_file).parent
+        frida_output = str(final_dir / (base_name + '.tmp.frida'))
+
+    # Frida 解密写入临时文件
+    success, result = decode_mflac(input_file, frida_output)
+
+    if not success or not result:
+        # 解密失败：清理 Frida 可能残留的输出文件
+        if os.path.exists(frida_output):
+            try:
+                os.remove(frida_output)
+            except OSError:
+                pass
         return None
 
-    # 检测实际音频格式，修正文件扩展名
-    actual_ext = _detect_audio_format(result)
-    out_path = Path(result)
-    if out_path.suffix.lower() != '.' + actual_ext:
-        new_path = str(out_path.with_suffix('.' + actual_ext))
-        os.rename(result, new_path)
-        print(f"实际格式为 {actual_ext}，输出文件: {new_path}")
-        result = new_path
+    if not os.path.exists(result):
+        return None
 
-    return result
+    # 检测实际音频格式
+    actual_ext = _detect_audio_format(result)
+
+    if desired_ext is not None and desired_ext != actual_ext:
+        # 需要 FFmpeg 转码：从临时文件转换为用户期望的格式
+        final_path = str(final_dir / (base_name + '.' + desired_ext))
+        print(f"实际格式为 {actual_ext}，正在转换为 {desired_ext}...")
+        from src.utils.converter import convert_audio
+        if convert_audio(result, final_path, desired_ext):
+            print(f"转换成功: {final_path}")
+            try:
+                os.remove(result)
+            except OSError:
+                pass
+            return final_path
+        else:
+            # 转换失败，保留实际格式
+            fallback = str(final_dir / (base_name + '.' + actual_ext))
+            os.replace(result, fallback)
+            print(f"FFmpeg 转换失败，保留原始格式: {fallback}")
+            return fallback
+    else:
+        # 不需要转码，直接重命名为正确扩展名
+        final_path = str(final_dir / (base_name + '.' + actual_ext))
+        os.replace(result, final_path)
+        print(f"实际格式为 {actual_ext}，输出文件: {final_path}")
+        return final_path
 
 
 def batch_convert(

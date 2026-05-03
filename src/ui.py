@@ -109,7 +109,7 @@ class AudioConverterUI:
         self.root.configure(fg_color=COLORS["bg_main"])
 
         # 变量
-        self.output_format = ctk.StringVar(value="flac")
+        self.output_format = ctk.StringVar(value="默认")
         self.input_files: Dict[str, FileCard] = {}
         self.converting = False
 
@@ -149,7 +149,7 @@ class AudioConverterUI:
             text_color=COLORS["text_dim"]
         ).grid(row=1, column=0, padx=30, pady=(10, 10), sticky="w")
         
-        for i, fmt in enumerate(["flac", "mp3", "wav", "m4a"]):
+        for i, fmt in enumerate(["默认", "flac", "mp3", "wav", "m4a"]):
             rb = ctk.CTkRadioButton(
                 self.sidebar, text=fmt.upper(), 
                 variable=self.output_format, value=fmt, 
@@ -341,7 +341,11 @@ class AudioConverterUI:
             card.set_status("正在转换...", COLORS["accent"])
             try:
                 final_out = out_dir or str(Path(path).parent)
-                output_path = str(Path(final_out) / f"{Path(path).stem}.{self.output_format.get()}")
+                fmt_choice = self.output_format.get()
+                if fmt_choice == "默认":
+                    output_path = str(Path(final_out) / Path(path).stem)
+                else:
+                    output_path = str(Path(final_out) / f"{Path(path).stem}.{fmt_choice}")
 
                 actual_output = convert_file(path, output_path)
                 if actual_output:

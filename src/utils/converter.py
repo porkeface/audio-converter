@@ -14,17 +14,18 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+# FFmpeg 路径：优先使用项目目录下的，其次使用系统 PATH
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+_FFMPEG_DIR = _PROJECT_ROOT / "ffmpeg-8.1-full_build" / "bin"
+FFMPEG_PATH = str(_FFMPEG_DIR / "ffmpeg.exe") if _FFMPEG_DIR.joinpath("ffmpeg.exe").exists() else "ffmpeg"
+FFPROBE_PATH = str(_FFMPEG_DIR / "ffprobe.exe") if _FFMPEG_DIR.joinpath("ffprobe.exe").exists() else "ffprobe"
+
 
 def check_ffmpeg() -> bool:
-    """
-    检查系统是否安装了 FFmpeg
-
-    返回:
-        True 如果 FFmpeg 可用
-    """
+    """检查 FFmpeg 是否可用。"""
     try:
         subprocess.run(
-            ["ffmpeg", "-version"],
+            [FFMPEG_PATH, "-version"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True
@@ -74,7 +75,7 @@ def convert_audio(
 
     # 构建 FFmpeg 命令
     cmd = [
-        "ffmpeg",
+        FFMPEG_PATH,
         "-i", str(input_path),  # 输入文件
         "-y",  # 覆盖输出文件
     ]
@@ -96,6 +97,12 @@ def convert_audio(
         # WAV 设置
         cmd.extend([
             "-codec:a", "pcm_s16le",  # WAV 编码器
+        ])
+    elif output_format == "m4a" or output_path.suffix == ".m4a":
+        # M4A (AAC) 设置
+        cmd.extend([
+            "-codec:a", "aac",  # AAC 编码器
+            "-b:a", bitrate,
         ])
 
     # 输出文件
@@ -131,7 +138,7 @@ def get_audio_info(file_path: str) -> dict:
     """
     try:
         cmd = [
-            "ffprobe",
+            FFPROBE_PATH,
             "-v", "quiet",
             "-print_format", "json",
             "-show_format",
