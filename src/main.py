@@ -184,6 +184,11 @@ def frida_convert(input_file: str, output_file: Optional[str] = None) -> Optiona
     # 检测实际音频格式
     actual_ext = _detect_audio_format(result)
 
+    # FFmpeg 转码前，保存元数据（加密文件可能读不到，尝试从解密后的临时文件读取）
+    source_meta = _read_source_metadata(input_file)
+    if not source_meta:
+        source_meta = _read_source_metadata(result)
+
     if desired_ext is not None and desired_ext != actual_ext:
         # 需要 FFmpeg 转码：从临时文件转换为用户期望的格式
         final_path = str(final_dir / (base_name + '.' + desired_ext))
@@ -195,6 +200,8 @@ def frida_convert(input_file: str, output_file: Optional[str] = None) -> Optiona
                 os.remove(result)
             except OSError:
                 pass
+            # 重新写入元数据（FFmpeg 转码可能丢失元数据）
+            _embed_audio_metadata(final_path, None, source_meta)
             return final_path
         else:
             # 转换失败，保留实际格式
@@ -357,6 +364,8 @@ def _detect_audio_format_data(data: bytes) -> str:
 
 def _extract_artist_names(artist_list) -> str:
     """从 NCM 元数据的 artist 字段提取艺术家名称字符串。"""
+    if isinstance(artist_list, str):
+        return artist_list
     names = []
     for a in (artist_list or []):
         if isinstance(a, list):
@@ -366,14 +375,76 @@ def _extract_artist_names(artist_list) -> str:
     return ', '.join(names)
 
 
-def _embed_audio_metadata(output_path: str, fmt) -> None:
-    """将元数据写入输出音频文件，或保留音频流中已有的标签。"""
+def _read_source_metadata(file_path: str) -> dict:
+    """从音频文件中读取元数据（用于在 FFmpeg 转码前保存元数据）。"""
+    try:
+        import mutagen
+        audio = mutagen.File(file_path, easy=False)
+        if audio is None:
+            return {}
+        result = {}
+        if isinstance(audio, mutagen.flac.FLAC):
+            if audio.get('title'):
+                result['title'] = audio['title'][0]
+            if audio.get('artist'):
+                result['artist'] = audio['artist'][0]
+            if audio.get('album'):
+                result['album'] = audio['album'][0]
+            if audio.pictures:
+                result['cover'] = audio.pictures[0].data
+        elif isinstance(audio, mutagen.mp3.MP3) and audio.tags:
+            if audio.tags.get('TIT2'):
+                result['title'] = audio.tags['TIT2'].text[0]
+            if audio.tags.get('TPE1'):
+                result['artist'] = audio.tags['TPE1'].text[0]
+            if audio.tags.get('TALB'):
+                result['album'] = audio.tags['TALB'].text[0]
+            if audio.tags.get('APIC'):
+                result['cover'] = audio.tags['APIC'].data
+        elif isinstance(audio, mutagen.oggvorbis.OggVorbis):
+            if audio.get('title'):
+                result['title'] = audio['title'][0]
+            if audio.get('artist'):
+                result['artist'] = audio['artist'][0]
+            if audio.get('album'):
+                result['album'] = audio['album'][0]
+        elif isinstance(audio, mutagen.mp4.MP4):
+            if audio.get('\xa9nam'):
+                result['title'] = audio['\xa9nam'][0]
+            if audio.get('\xa9ART'):
+                result['artist'] = audio['\xa9ART'][0]
+            if audio.get('\xa9alb'):
+                result['album'] = audio['\xa9alb'][0]
+            if audio.get('covr'):
+                result['cover'] = bytes(audio['covr'][0])
+        return result
+    except Exception:
+        return {}
+
+
+def _embed_audio_metadata(output_path: str, fmt, source_meta: dict = None) -> None:
+    """将元数据写入输出音频文件，或保留音频流中已有的标签。
+
+    Args:
+        output_path: 输出文件路径
+        fmt: 格式对象（NCMFormat 等）
+        source_meta: 从源文件预读取的元数据（用于 mflac/mgg 等无独立元数据源的格式）
+    """
     # 提取 NCM 元数据（如果有）
     meta = None
     cover = None
     if isinstance(fmt, NCMFormat):
         meta = fmt.get_metadata()
         cover = fmt.get_cover_image()
+
+    # 如果 NCM 没有元数据，使用从源文件预读取的元数据
+    if not meta and source_meta:
+        meta = {
+            'musicName': source_meta.get('title', ''),
+            'artist': source_meta.get('artist', ''),
+            'album': source_meta.get('album', ''),
+        }
+        cover = source_meta.get('cover')
 
     has_useful_meta = meta and (meta.get('musicName') or meta.get('artist') or meta.get('album'))
 
@@ -440,6 +511,24 @@ def _embed_audio_metadata(output_path: str, fmt) -> None:
                 print(f"[+] 已写入 OGG 元数据")
             else:
                 print(f"[+] OGG 已有元数据，保留不变")
+
+        elif isinstance(audio, mutagen.mp4.MP4):
+            # M4A/AAC：使用 iTunes 风格的标签
+            if has_useful_meta:
+                if title:
+                    audio['\xa9nam'] = [title]
+                if artist_str:
+                    audio['\xa9ART'] = [artist_str]
+                if album:
+                    audio['\xa9alb'] = [album]
+            if cover:
+                from mutagen.mp4 import MP4Cover
+                audio['covr'] = [MP4Cover(cover, imageformat=MP4Cover.FORMAT_JPEG)]
+            if has_useful_meta or cover:
+                audio.save()
+                print(f"[+] 已写入 M4A 元数据")
+            else:
+                print(f"[+] M4A 已有元数据，保留不变")
 
     except Exception as e:
         print(f"[-] 写入元数据失败（不影响音频）: {e}")

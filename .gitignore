@@ -14,8 +14,6 @@ __pycache__/
 *$py.class
 *.so
 *.egg-info/
-dist/
-build/
 *.egg
 
 # 音频文件（源文件和输出文件）
@@ -31,6 +29,7 @@ build/
 *.ogg
 *.m4a
 *.wma
+*.mgg
 
 # 测试音频文件（如果有）
 test_audio/
@@ -58,9 +57,16 @@ output/
 temp/
 tmp/
 
+# FFmpeg 二进制文件（体积大，不上传）
+vendor/
+
+# PyInstaller
+audio-converter.spec
+dist/
+build/
+
 # uv 包管理器缓存
 .uv/
-*.uv.lock
 
 # 如果是 Windows 批处理文件（如果想忽略）
 # *.bat
