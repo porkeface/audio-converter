@@ -13,6 +13,7 @@
   python -m src.main batch D:\music
 """
 
+import os
 import sys
 import argparse
 import traceback
@@ -31,8 +32,8 @@ def convert_file(
     input_file: str,
     output_file: Optional[str] = None,
     key_file: Optional[str] = None,
-) -> bool:
-    """自动检测格式并解密。"""
+) -> Optional[str]:
+    """自动检测格式并解密。返回实际输出文件路径，失败返回 None。"""
     fmt = detect_format(input_file)
 
     if fmt is None:
@@ -41,9 +42,9 @@ def convert_file(
             header = f.read(4)
         if header in (b"fLaC", b"ID3", b"RIFF", b"OggS") or header[:2] == b'\xff\xf1':
             print(f"标准音频格式，无需解密: {input_file}")
-            return True
+            return input_file
         print(f"无法识别的格式: {input_file}")
-        return False
+        return None
 
     print(f"检测到格式: {fmt.FORMAT_NAME}")
     print(f"文件: {fmt.file_path.name}")
@@ -63,7 +64,7 @@ def convert_file(
     except Exception as e:
         print(f"解密失败: {e}")
         traceback.print_exc()
-        return False
+        return None
 
     # 根据实际音频数据检测格式，确定正确的文件扩展名
     actual_ext = _detect_audio_format_data(data)
@@ -71,7 +72,6 @@ def convert_file(
         output_file = str(fmt.file_path.parent / (fmt.file_path.stem + '.' + actual_ext))
     else:
         # 用户指定了输出路径，但扩展名可能与实际格式不匹配
-        # 例如用户选了 FLAC 但实际是 MP3 → 改为正确扩展名
         out_path = Path(output_file)
         if out_path.suffix.lower() != '.' + actual_ext:
             output_file = str(out_path.with_suffix('.' + actual_ext))
@@ -89,14 +89,27 @@ def convert_file(
     except Exception as e:
         print(f"元数据显示失败（不影响输出）: {e}")
 
-    return True
+    return output_file
 
 
-def frida_convert(input_file: str, output_file: Optional[str] = None) -> bool:
-    """通过 Frida 解密 mflac（需要 QQ 音乐运行）。"""
+def frida_convert(input_file: str, output_file: Optional[str] = None) -> Optional[str]:
+    """通过 Frida 解密 mflac/mgg（需要 QQ 音乐运行）。返回实际输出路径。"""
     from src.formats.frida_decrypt import decode_mflac
     success, result = decode_mflac(input_file, output_file)
-    return success
+
+    if not success or not result or not os.path.exists(result):
+        return None
+
+    # 检测实际音频格式，修正文件扩展名
+    actual_ext = _detect_audio_format(result)
+    out_path = Path(result)
+    if out_path.suffix.lower() != '.' + actual_ext:
+        new_path = str(out_path.with_suffix('.' + actual_ext))
+        os.rename(result, new_path)
+        print(f"实际格式为 {actual_ext}，输出文件: {new_path}")
+        result = new_path
+
+    return result
 
 
 def batch_convert(
@@ -194,6 +207,25 @@ def get_metadata_str(fmt) -> str:
     return ' · '.join(parts)
 
 
+def get_metadata_from_file(file_path: str) -> str:
+    """从音频文件中读取元数据标签（支持 FLAC/MP3/OGG）。"""
+    try:
+        import mutagen
+        audio = mutagen.File(file_path, easy=True)
+        if audio is None:
+            return ""
+        parts = []
+        if audio.get('title'):
+            parts.append(audio['title'][0])
+        if audio.get('artist'):
+            parts.append(audio['artist'][0])
+        if audio.get('album'):
+            parts.append(audio['album'][0])
+        return ' · '.join(parts)
+    except Exception:
+        return ""
+
+
 def _detect_audio_format(file_path: str) -> str:
     """根据文件头检测实际音频格式（flac/mp3/wav/ogg）。"""
     try:
@@ -237,17 +269,15 @@ def _extract_artist_names(artist_list) -> str:
 
 
 def _embed_audio_metadata(output_path: str, fmt) -> None:
-    """将元数据和封面写入输出音频文件（FLAC/MP3）。"""
-    if not isinstance(fmt, NCMFormat):
-        return
+    """将元数据写入输出音频文件，或保留音频流中已有的标签。"""
+    # 提取 NCM 元数据（如果有）
+    meta = None
+    cover = None
+    if isinstance(fmt, NCMFormat):
+        meta = fmt.get_metadata()
+        cover = fmt.get_cover_image()
 
-    meta = fmt.get_metadata()
-    cover = fmt.get_cover_image()
-
-    # 没有 NCM 元数据且没有封面 → 跳过，保留音频流中已有的 Vorbis/ID3 标签
     has_useful_meta = meta and (meta.get('musicName') or meta.get('artist') or meta.get('album'))
-    if not has_useful_meta and not cover:
-        return
 
     try:
         import mutagen
@@ -262,12 +292,13 @@ def _embed_audio_metadata(output_path: str, fmt) -> None:
 
         if isinstance(audio, mutagen.flac.FLAC):
             from mutagen.flac import Picture
-            if title:
-                audio['title'] = [title]
-            if artist_str:
-                audio['artist'] = [artist_str]
-            if album:
-                audio['album'] = [album]
+            if has_useful_meta:
+                if title:
+                    audio['title'] = [title]
+                if artist_str:
+                    audio['artist'] = [artist_str]
+                if album:
+                    audio['album'] = [album]
             if cover:
                 pic = Picture()
                 pic.type = 3
@@ -275,31 +306,42 @@ def _embed_audio_metadata(output_path: str, fmt) -> None:
                 pic.data = cover
                 audio.clear_pictures()
                 audio.add_picture(pic)
-            audio.save()
-            print(f"[+] 已写入 FLAC 元数据")
+            if has_useful_meta or cover:
+                audio.save()
+                print(f"[+] 已写入 FLAC 元数据")
+            else:
+                print(f"[+] FLAC 已有元数据，保留不变")
 
         elif isinstance(audio, mutagen.mp3.MP3):
             from mutagen.id3 import APIC, TIT2, TPE1, TALB
-            if title:
-                audio.tags.add(TIT2(encoding=3, text=[title]))
-            if artist_str:
-                audio.tags.add(TPE1(encoding=3, text=[artist_str]))
-            if album:
-                audio.tags.add(TALB(encoding=3, text=[album]))
+            if has_useful_meta:
+                if title:
+                    audio.tags.add(TIT2(encoding=3, text=[title]))
+                if artist_str:
+                    audio.tags.add(TPE1(encoding=3, text=[artist_str]))
+                if album:
+                    audio.tags.add(TALB(encoding=3, text=[album]))
             if cover:
                 audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover))
-            audio.save()
-            print(f"[+] 已写入 MP3 元数据")
+            if has_useful_meta or cover:
+                audio.save()
+                print(f"[+] 已写入 MP3 元数据")
+            else:
+                print(f"[+] MP3 已有元数据，保留不变")
 
         elif isinstance(audio, mutagen.oggvorbis.OggVorbis):
-            if title:
-                audio['title'] = [title]
-            if artist_str:
-                audio['artist'] = [artist_str]
-            if album:
-                audio['album'] = [album]
-            audio.save()
-            print(f"[+] 已写入 OGG 元数据")
+            # OGG Vorbis：保留已有标签，仅在有 NCM 元数据时覆盖
+            if has_useful_meta:
+                if title:
+                    audio['title'] = [title]
+                if artist_str:
+                    audio['artist'] = [artist_str]
+                if album:
+                    audio['album'] = [album]
+                audio.save()
+                print(f"[+] 已写入 OGG 元数据")
+            else:
+                print(f"[+] OGG 已有元数据，保留不变")
 
     except Exception as e:
         print(f"[-] 写入元数据失败（不影响音频）: {e}")

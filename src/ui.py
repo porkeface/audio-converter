@@ -18,7 +18,7 @@ try:
 except ImportError:
     DRAG_DROP_AVAILABLE = False
 
-from .main import convert_file, get_metadata_str
+from .main import convert_file, get_metadata_str, get_metadata_from_file
 from .utils.detector import detect_format
 
 # --- 动态全局样式配置 (Light, Dark) ---
@@ -343,8 +343,8 @@ class AudioConverterUI:
                 final_out = out_dir or str(Path(path).parent)
                 output_path = str(Path(final_out) / f"{Path(path).stem}.{self.output_format.get()}")
 
-                success = convert_file(path, output_path)
-                if success:
+                actual_output = convert_file(path, output_path)
+                if actual_output:
                     # 解密后提取元数据并显示在卡片上
                     meta_str = ""
                     try:
@@ -353,6 +353,12 @@ class AudioConverterUI:
                             meta_str = get_metadata_str(fmt)
                     except Exception:
                         pass
+                    # NCM 元数据为空时，从输出文件读取（适用于 MGG/OGG 等）
+                    if not meta_str:
+                        try:
+                            meta_str = get_metadata_from_file(actual_output)
+                        except Exception:
+                            pass
                     if meta_str:
                         card.set_detail(meta_str)
                     card.set_status("✓ 已完成", COLORS["success"])
