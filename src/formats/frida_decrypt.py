@@ -280,9 +280,9 @@ def batch_decode(input_dir, output_dir=None):
         output_dir = os.path.join(input_dir, "decoded")
     os.makedirs(output_dir, exist_ok=True)
 
-    mflac_files = [f for f in os.listdir(input_dir) if f.endswith('.mflac')]
+    mflac_files = [f for f in os.listdir(input_dir) if f.endswith(('.mflac', '.mgg'))]
     if not mflac_files:
-        print("No .mflac files found.")
+        print("No .mflac/.mgg files found.")
         return
 
     print(f"Found {len(mflac_files)} mflac files")

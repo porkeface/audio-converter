@@ -47,6 +47,8 @@ def is_standard_audio(file_path: Path) -> bool:
         return True
     if header == b"RIFF":
         return True
+    if header == b"OggS":
+        return True
     if header == b"ADIF" or header[:2] == b'\xff\xf1':
         return True
 

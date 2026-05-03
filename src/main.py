@@ -39,7 +39,7 @@ def convert_file(
         # 检查是否是标准音频
         with open(input_file, 'rb') as f:
             header = f.read(4)
-        if header in (b"fLaC", b"ID3", b"RIFF") or header[:2] == b'\xff\xf1':
+        if header in (b"fLaC", b"ID3", b"RIFF", b"OggS") or header[:2] == b'\xff\xf1':
             print(f"标准音频格式，无需解密: {input_file}")
             return True
         print(f"无法识别的格式: {input_file}")
@@ -110,14 +110,14 @@ def batch_convert(
         output_dir = str(input_path / "converted")
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    extensions = ('.mflac', '.ncm')
+    extensions = ('.mflac', '.mgg', '.ncm')
     files: List[Path] = []
     for ext in extensions:
         files.extend(input_path.glob(f'*{ext}'))
         files.extend(input_path.glob(f'*{ext.upper()}'))
 
     if not files:
-        print("未找到支持的文件 (.mflac, .ncm)")
+        print("未找到支持的文件 (.mflac, .mgg, .ncm)")
         return 0, 0
 
     print(f"找到 {len(files)} 个文件")
@@ -195,7 +195,7 @@ def get_metadata_str(fmt) -> str:
 
 
 def _detect_audio_format(file_path: str) -> str:
-    """根据文件头检测实际音频格式（flac/mp3/wav）。"""
+    """根据文件头检测实际音频格式（flac/mp3/wav/ogg）。"""
     try:
         with open(file_path, 'rb') as f:
             header = f.read(4)
@@ -205,6 +205,8 @@ def _detect_audio_format(file_path: str) -> str:
             return 'mp3'
         if header == b'RIFF':
             return 'wav'
+        if header == b'OggS':
+            return 'ogg'
     except Exception:
         pass
     return 'flac'
@@ -218,6 +220,8 @@ def _detect_audio_format_data(data: bytes) -> str:
         return 'mp3'
     if data[:4] == b'RIFF':
         return 'wav'
+    if data[:4] == b'OggS':
+        return 'ogg'
     return 'flac'
 
 
@@ -286,6 +290,16 @@ def _embed_audio_metadata(output_path: str, fmt) -> None:
                 audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover))
             audio.save()
             print(f"[+] 已写入 MP3 元数据")
+
+        elif isinstance(audio, mutagen.oggvorbis.OggVorbis):
+            if title:
+                audio['title'] = [title]
+            if artist_str:
+                audio['artist'] = [artist_str]
+            if album:
+                audio['album'] = [album]
+            audio.save()
+            print(f"[+] 已写入 OGG 元数据")
 
     except Exception as e:
         print(f"[-] 写入元数据失败（不影响音频）: {e}")

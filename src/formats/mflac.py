@@ -26,8 +26,8 @@ class MflacFormat(AudioFormat):
         self._decrypted_data: Optional[bytes] = None
 
     def detect(self) -> bool:
-        """通过扩展名和文件结构检测。"""
-        if self.file_path.suffix.lower() != '.mflac':
+        """通过扩展名和文件结构检测（支持 .mflac 和 .mgg）。"""
+        if self.file_path.suffix.lower() not in ('.mflac', '.mgg'):
             return False
         return self.file_path.stat().st_size > MFLAC_HEADER_SIZE + 30
 

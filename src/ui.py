@@ -306,7 +306,7 @@ class AudioConverterUI:
         self.progress.set(0)
 
     def _select_files(self):
-        files = filedialog.askopenfilenames(title="选择音频文件", filetypes=[("加密音频", "*.ncm *.mflac"), ("所有文件", "*.*")])
+        files = filedialog.askopenfilenames(title="选择音频文件", filetypes=[("加密音频", "*.ncm *.mflac *.mgg"), ("所有文件", "*.*")])
         for f in files:
             self._add_file_to_ui(f)
 
