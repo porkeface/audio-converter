@@ -14,6 +14,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+# 防止 subprocess 弹出命令行窗口（GUI 应用必需）
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+
 # FFmpeg 路径：优先使用项目目录下的，其次使用系统 PATH
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _FFMPEG_DIR = _PROJECT_ROOT / "vendor" / "ffmpeg"
@@ -28,7 +31,8 @@ def check_ffmpeg() -> bool:
             [FFMPEG_PATH, "-version"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=True
+            check=True,
+            creationflags=_NO_WINDOW,
         )
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -117,7 +121,8 @@ def convert_audio(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            check=True,
+            creationflags=_NO_WINDOW,
         )
         print(f"✓ 转换成功: {output_file}")
         return True
@@ -151,7 +156,8 @@ def get_audio_info(file_path: str) -> dict:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            check=True,
+            creationflags=_NO_WINDOW,
         )
 
         import json
