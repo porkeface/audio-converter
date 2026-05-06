@@ -170,6 +170,62 @@ def write_and_convert(
 
 
 # ──────────────────────────────────────────────
+# 标准音频格式转换
+# ──────────────────────────────────────────────
+
+def _convert_standard_audio(
+    input_file: str,
+    output_file: Optional[str] = None,
+) -> Optional[str]:
+    """转换标准音频格式（非加密格式）。
+
+    支持 FLAC、MP3、WAV、OGG、AAC 等格式之间的转换。
+
+    Args:
+        input_file: 输入文件路径。
+        output_file: 输出文件路径（可选）。
+
+    Returns:
+        实际输出文件路径，失败返回 None。
+    """
+    input_path = Path(input_file)
+    actual_ext = detect_audio_format_from_file(input_file)
+
+    # 确定输出路径和期望的格式
+    if output_file is None:
+        # 没有指定输出文件，直接返回原文件
+        print(f"标准音频格式，无需转换: {input_file}")
+        return input_file
+
+    # 解析用户指定的输出格式
+    fname = Path(output_file).name
+    base_name, desired_ext = parse_output_extension(fname)
+
+    if desired_ext is None:
+        # 没有指定扩展名，使用原格式
+        print(f"标准音频格式，无需转换: {input_file}")
+        return input_file
+
+    # 检查是否需要转换
+    if desired_ext == actual_ext:
+        print(f"格式相同，无需转换: {input_file}")
+        return input_file
+
+    # 需要 FFmpeg 转换
+    output_path = str(Path(output_file).parent / f"{base_name}.{desired_ext}")
+    print(f"检测到标准音频格式: {actual_ext}")
+    print(f"正在转换为: {desired_ext}...")
+
+    from src.utils.converter import convert_audio
+    if convert_audio(input_file, output_path, desired_ext):
+        print(f"转换成功: {output_path}")
+        return output_path
+    else:
+        print(f"转换失败")
+        return None
+
+
+# ──────────────────────────────────────────────
 # 核心转换
 # ──────────────────────────────────────────────
 
@@ -178,7 +234,16 @@ def convert_file(
     output_file: Optional[str] = None,
     key_file: Optional[str] = None,
 ) -> Optional[str]:
-    """自动检测格式并解密。返回实际输出文件路径，失败返回 None。"""
+    """自动检测格式并解密/转换。返回实际输出文件路径，失败返回 None。
+
+    Args:
+        input_file: 输入文件路径。
+        output_file: 输出文件路径（可选）。
+        key_file: 密钥文件路径（可选，用于 mflac 离线解密）。
+
+    Returns:
+        实际输出文件路径，失败返回 None。
+    """
     fmt = detect_format(input_file)
 
     if fmt is None:
@@ -186,8 +251,7 @@ def convert_file(
         with open(input_file, 'rb') as f:
             header = f.read(4)
         if header in (b"fLaC", b"ID3", b"RIFF", b"OggS") or header[:2] == b'\xff\xf1':
-            print(f"标准音频格式，无需解密: {input_file}")
-            return input_file
+            return _convert_standard_audio(input_file, output_file)
         print(f"无法识别的格式: {input_file}")
         return None
 
