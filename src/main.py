@@ -18,10 +18,155 @@ import sys
 import argparse
 import traceback
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 
 from src.formats import NCMFormat, MflacFormat
+from src.formats.base import AudioFormat
 from src.utils.detector import detect_format
+
+
+# ──────────────────────────────────────────────
+# 常量
+# ──────────────────────────────────────────────
+
+KNOWN_AUDIO_EXTENSIONS = {'.flac', '.mp3', '.wav', '.ogg', '.m4a', '.ncm', '.mflac', '.mgg', '.tmp'}
+
+
+# ──────────────────────────────────────────────
+# 音频格式检测
+# ──────────────────────────────────────────────
+
+def detect_audio_format(data: bytes) -> str:
+    """根据音频数据的文件头检测格式。
+
+    Args:
+        data: 音频数据的前几个字节。
+
+    Returns:
+        格式字符串: 'flac', 'mp3', 'wav', 'ogg', 或 'flac'(默认)。
+    """
+    if len(data) < 4:
+        return 'flac'
+    if data[:4] == b'fLaC':
+        return 'flac'
+    if data[:3] == b'ID3' or data[:2] == b'\xff\xfb':
+        return 'mp3'
+    if data[:4] == b'RIFF':
+        return 'wav'
+    if data[:4] == b'OggS':
+        return 'ogg'
+    return 'flac'
+
+
+def detect_audio_format_from_file(file_path: str) -> str:
+    """根据文件头检测实际音频格式。
+
+    Args:
+        file_path: 音频文件路径。
+
+    Returns:
+        格式字符串: 'flac', 'mp3', 'wav', 'ogg', 或 'flac'(默认)。
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            header = f.read(4)
+        return detect_audio_format(header)
+    except Exception:
+        return 'flac'
+
+
+# ──────────────────────────────────────────────
+# 输出路径解析
+# ──────────────────────────────────────────────
+
+def parse_output_extension(filename: str) -> Tuple[str, Optional[str]]:
+    """从文件名中解析基础名称和期望的扩展名。
+
+    Args:
+        filename: 文件名（不含目录路径）。
+
+    Returns:
+        Tuple of (base_name, desired_extension_or_None)。
+    """
+    last_dot = filename.rfind('.')
+    if last_dot > 0 and filename[last_dot:].lower() in KNOWN_AUDIO_EXTENSIONS:
+        desired_ext = filename[last_dot:].lower().lstrip('.')
+        base_name = filename[:last_dot]
+        return base_name, desired_ext
+    return filename, None
+
+
+def build_output_path(
+    output_dir: str,
+    base_name: str,
+    actual_ext: str,
+    desired_ext: Optional[str] = None,
+) -> str:
+    """构建最终输出文件路径。
+
+    Args:
+        output_dir: 输出目录。
+        base_name: 文件基础名称（不含扩展名）。
+        actual_ext: 实际音频格式的扩展名。
+        desired_ext: 用户期望的扩展名，None 表示使用实际格式。
+
+    Returns:
+        完整的输出文件路径。
+    """
+    ext = desired_ext if desired_ext is not None else actual_ext
+    return str(Path(output_dir) / f"{base_name}.{ext}")
+
+
+# ──────────────────────────────────────────────
+# 文件写入和转码
+# ──────────────────────────────────────────────
+
+def write_and_convert(
+    data: bytes,
+    output_file: str,
+    actual_ext: str,
+    desired_ext: Optional[str] = None,
+) -> str:
+    """写入解密数据并根据需要进行 FFmpeg 转码。
+
+    Args:
+        data: 解密后的音频数据。
+        output_file: 最终输出文件路径。
+        actual_ext: 实际音频格式。
+        desired_ext: 期望的输出格式，None 表示不转码。
+
+    Returns:
+        实际输出的文件路径。
+    """
+    need_convert = desired_ext is not None and desired_ext != actual_ext
+
+    if need_convert:
+        # 需要转码：先写入临时文件，再用 FFmpeg 转换
+        tmp_path = output_file + '.tmp.' + actual_ext
+        with open(tmp_path, 'wb') as f:
+            f.write(data)
+        print(f"解密完成，实际格式: {actual_ext}，正在转换为 {desired_ext}...")
+
+        from src.utils.converter import convert_audio
+        if convert_audio(tmp_path, output_file, desired_ext):
+            print(f"转换成功: {output_file}")
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        else:
+            # FFmpeg 转换失败，保留实际格式的文件
+            base_name = Path(output_file).stem
+            fallback = str(Path(output_file).parent / f"{base_name}.{actual_ext}")
+            os.replace(tmp_path, fallback)
+            output_file = fallback
+            print(f"FFmpeg 转换失败，保留原始格式: {output_file}")
+    else:
+        # 不需要转码：直接写入
+        with open(output_file, 'wb') as f:
+            f.write(data)
+
+    return output_file
 
 
 # ──────────────────────────────────────────────
@@ -66,62 +211,27 @@ def convert_file(
         traceback.print_exc()
         return None
 
-    # 根据实际音频数据检测格式，确定正确的文件扩展名
-    actual_ext = _detect_audio_format_data(data)
+    # 根据实际音频数据检测格式
+    actual_ext = detect_audio_format(data)
 
-    # 确定用户期望的输出格式和最终输出路径
-    _known_exts = {'.flac', '.mp3', '.wav', '.ogg', '.m4a', '.ncm', '.mflac', '.mgg', '.tmp'}
-    desired_ext = None  # 用户期望的格式（None 表示"默认"，即使用实际格式）
-
+    # 确定输出路径
     if output_file is None:
-        output_file = str(fmt.file_path.parent / (fmt.file_path.stem + '.' + actual_ext))
+        output_file = str(fmt.file_path.parent / f"{fmt.file_path.stem}.{actual_ext}")
     else:
-        # 从用户指定的路径中提取期望的扩展名
-        # 不使用 Path.stem / Path.suffix（会错误截断含点号的文件名，如 "G.E.M.邓紫棋"）
         fname = Path(output_file).name
-        last_dot = fname.rfind('.')
-        if last_dot > 0 and fname[last_dot:].lower() in _known_exts:
-            desired_ext = fname[last_dot:].lower().lstrip('.')
-            base_name = fname[:last_dot]
-        else:
-            # 无已知扩展名（"默认"模式或文件名含点号）
-            desired_ext = None
-            base_name = fname
-
+        base_name, desired_ext = parse_output_extension(fname)
         if desired_ext is None:
             # "默认"模式：使用实际格式
-            output_file = str(Path(output_file).parent / (base_name + '.' + actual_ext))
+            output_file = str(Path(output_file).parent / f"{base_name}.{actual_ext}")
         else:
-            # 用户指定了格式：最终路径使用用户指定的格式
-            output_file = str(Path(output_file).parent / (base_name + '.' + desired_ext))
+            # 用户指定了格式
+            output_file = str(Path(output_file).parent / f"{base_name}.{desired_ext}")
 
-    # 判断是否需要 FFmpeg 转码
-    need_convert = desired_ext is not None and desired_ext != actual_ext
+    # 解析期望的扩展名（用于转码判断）
+    _, desired_ext = parse_output_extension(Path(output_file).name)
 
-    if need_convert:
-        # 需要转码：先写入临时文件，再用 FFmpeg 转换
-        tmp_path = output_file + '.tmp.' + actual_ext
-        with open(tmp_path, 'wb') as f:
-            f.write(data)
-        print(f"解密完成，实际格式: {actual_ext}，正在转换为 {desired_ext}...")
-
-        from src.utils.converter import convert_audio
-        if convert_audio(tmp_path, output_file, desired_ext):
-            print(f"转换成功: {output_file}")
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-        else:
-            # FFmpeg 转换失败，保留实际格式的文件
-            fallback = str(Path(output_file).parent / (base_name + '.' + actual_ext))
-            os.replace(tmp_path, fallback)
-            output_file = fallback
-            print(f"FFmpeg 转换失败，保留原始格式: {output_file}")
-    else:
-        # 不需要转码：直接写入
-        with open(output_file, 'wb') as f:
-            f.write(data)
+    # 写入并转码
+    output_file = write_and_convert(data, output_file, actual_ext, desired_ext)
 
     print(f"解密成功: {output_file} ({len(data):,} 字节)")
 
@@ -139,32 +249,23 @@ def frida_convert(input_file: str, output_file: Optional[str] = None) -> Optiona
     """通过 Frida 解密 mflac/mgg（需要 QQ 音乐运行）。返回实际输出路径。"""
     from src.formats.frida_decrypt import decode_mflac
 
-    # 先确定用户期望的输出格式
-    _known_exts = {'.flac', '.mp3', '.wav', '.ogg', '.m4a', '.ncm', '.mflac', '.mgg', '.tmp'}
+    # 解析用户期望的输出格式
     desired_ext = None
     if output_file:
-        fname = Path(output_file).name
-        last_dot = fname.rfind('.')
-        if last_dot > 0 and fname[last_dot:].lower() in _known_exts:
-            desired_ext = fname[last_dot:].lower().lstrip('.')
+        _, desired_ext = parse_output_extension(Path(output_file).name)
 
     # 确定 Frida 的输出目标和最终输出路径
-    # 关键：Frida 写入的文件不能和 FFmpeg 输出是同一个文件，否则报 "Output same as Input"
     if output_file:
         out_parent = Path(output_file).parent
         fname = Path(output_file).name
-        last_dot = fname.rfind('.')
-        if last_dot > 0 and fname[last_dot:].lower() in _known_exts:
-            base_name = fname[:last_dot]
-        else:
-            base_name = fname
+        base_name, _ = parse_output_extension(fname)
         # Frida 写入临时文件，FFmpeg 再转为最终格式
-        frida_output = str(out_parent / (base_name + '.tmp.frida'))
+        frida_output = str(out_parent / f"{base_name}.tmp.frida")
         final_dir = out_parent
     else:
         base_name = Path(input_file).stem
         final_dir = Path(input_file).parent
-        frida_output = str(final_dir / (base_name + '.tmp.frida'))
+        frida_output = str(final_dir / f"{base_name}.tmp.frida")
 
     # Frida 解密写入临时文件
     success, result = decode_mflac(input_file, frida_output)
@@ -182,16 +283,16 @@ def frida_convert(input_file: str, output_file: Optional[str] = None) -> Optiona
         return None
 
     # 检测实际音频格式
-    actual_ext = _detect_audio_format(result)
+    actual_ext = detect_audio_format_from_file(result)
 
-    # FFmpeg 转码前，保存元数据（加密文件可能读不到，尝试从解密后的临时文件读取）
+    # FFmpeg 转码前，保存元数据
     source_meta = _read_source_metadata(input_file)
     if not source_meta:
         source_meta = _read_source_metadata(result)
 
     if desired_ext is not None and desired_ext != actual_ext:
-        # 需要 FFmpeg 转码：从临时文件转换为用户期望的格式
-        final_path = str(final_dir / (base_name + '.' + desired_ext))
+        # 需要 FFmpeg 转码
+        final_path = str(final_dir / f"{base_name}.{desired_ext}")
         print(f"实际格式为 {actual_ext}，正在转换为 {desired_ext}...")
         from src.utils.converter import convert_audio
         if convert_audio(result, final_path, desired_ext):
@@ -200,18 +301,18 @@ def frida_convert(input_file: str, output_file: Optional[str] = None) -> Optiona
                 os.remove(result)
             except OSError:
                 pass
-            # 重新写入元数据（FFmpeg 转码可能丢失元数据）
+            # 重新写入元数据
             _embed_audio_metadata(final_path, None, source_meta)
             return final_path
         else:
             # 转换失败，保留实际格式
-            fallback = str(final_dir / (base_name + '.' + actual_ext))
+            fallback = str(final_dir / f"{base_name}.{actual_ext}")
             os.replace(result, fallback)
             print(f"FFmpeg 转换失败，保留原始格式: {fallback}")
             return fallback
     else:
         # 不需要转码，直接重命名为正确扩展名
-        final_path = str(final_dir / (base_name + '.' + actual_ext))
+        final_path = str(final_dir / f"{base_name}.{actual_ext}")
         os.replace(result, final_path)
         print(f"实际格式为 {actual_ext}，输出文件: {final_path}")
         return final_path
@@ -222,7 +323,16 @@ def batch_convert(
     output_dir: Optional[str] = None,
     key_file: Optional[str] = None,
 ) -> Tuple[int, int]:
-    """批量解密目录下所有支持的文件。"""
+    """批量解密目录下所有支持的文件。
+
+    Args:
+        input_dir: 输入目录路径。
+        output_dir: 输出目录路径，None 表示在输入目录下创建 converted 子目录。
+        key_file: 密钥文件路径（可选）。
+
+    Returns:
+        Tuple of (success_count, failed_count)。
+    """
     input_path = Path(input_dir)
     if output_dir is None:
         output_dir = str(input_path / "converted")
@@ -264,13 +374,12 @@ def batch_convert(
 # 辅助函数
 # ──────────────────────────────────────────────
 
-def _get_output_ext(fmt) -> str:
-    if isinstance(fmt, NCMFormat):
-        return '.' + (fmt._original_format or 'flac')
-    return '.flac'
+def _show_metadata(fmt: AudioFormat) -> None:
+    """显示格式对象中的元数据信息。
 
-
-def _show_metadata(fmt) -> None:
+    Args:
+        fmt: 音频格式对象。
+    """
     if isinstance(fmt, NCMFormat):
         meta = fmt.get_metadata()
         if meta:
@@ -286,8 +395,15 @@ def _show_metadata(fmt) -> None:
             print(f"  专辑: {meta.get('album', '-')}")
 
 
-def get_metadata_str(fmt) -> str:
-    """从解密后的格式对象中提取元数据摘要字符串。"""
+def get_metadata_str(fmt: AudioFormat) -> str:
+    """从解密后的格式对象中提取元数据摘要字符串。
+
+    Args:
+        fmt: 音频格式对象。
+
+    Returns:
+        元数据摘要字符串，格式为 "歌曲名 · 艺术家 · 专辑"。
+    """
     if not isinstance(fmt, NCMFormat):
         return ""
     meta = fmt.get_metadata()
@@ -313,7 +429,14 @@ def get_metadata_str(fmt) -> str:
 
 
 def get_metadata_from_file(file_path: str) -> str:
-    """从音频文件中读取元数据标签（支持 FLAC/MP3/OGG）。"""
+    """从音频文件中读取元数据标签（支持 FLAC/MP3/OGG/M4A）。
+
+    Args:
+        file_path: 音频文件路径。
+
+    Returns:
+        元数据摘要字符串，格式为 "标题 · 艺术家 · 专辑"。
+    """
     try:
         import mutagen
         audio = mutagen.File(file_path, easy=True)
@@ -331,39 +454,15 @@ def get_metadata_from_file(file_path: str) -> str:
         return ""
 
 
-def _detect_audio_format(file_path: str) -> str:
-    """根据文件头检测实际音频格式（flac/mp3/wav/ogg）。"""
-    try:
-        with open(file_path, 'rb') as f:
-            header = f.read(4)
-        if header == b'fLaC':
-            return 'flac'
-        if header[:3] == b'ID3' or header[:2] == b'\xff\xfb':
-            return 'mp3'
-        if header == b'RIFF':
-            return 'wav'
-        if header == b'OggS':
-            return 'ogg'
-    except Exception:
-        pass
-    return 'flac'
+def _extract_artist_names(artist_list: Any) -> str:
+    """从 NCM 元数据的 artist 字段提取艺术家名称字符串。
 
+    Args:
+        artist_list: NCM 元数据中的 artist 字段，可能是字符串或列表。
 
-def _detect_audio_format_data(data: bytes) -> str:
-    """根据音频数据的前几个字节检测格式。"""
-    if data[:4] == b'fLaC':
-        return 'flac'
-    if data[:3] == b'ID3' or data[:2] == b'\xff\xfb':
-        return 'mp3'
-    if data[:4] == b'RIFF':
-        return 'wav'
-    if data[:4] == b'OggS':
-        return 'ogg'
-    return 'flac'
-
-
-def _extract_artist_names(artist_list) -> str:
-    """从 NCM 元数据的 artist 字段提取艺术家名称字符串。"""
+    Returns:
+        逗号分隔的艺术家名称字符串。
+    """
     if isinstance(artist_list, str):
         return artist_list
     names = []
@@ -375,14 +474,21 @@ def _extract_artist_names(artist_list) -> str:
     return ', '.join(names)
 
 
-def _read_source_metadata(file_path: str) -> dict:
-    """从音频文件中读取元数据（用于在 FFmpeg 转码前保存元数据）。"""
+def _read_source_metadata(file_path: str) -> Dict[str, Any]:
+    """从音频文件中读取元数据（用于在 FFmpeg 转码前保存元数据）。
+
+    Args:
+        file_path: 音频文件路径。
+
+    Returns:
+        包含元数据的字典，可能包含 'title', 'artist', 'album', 'cover' 键。
+    """
     try:
         import mutagen
         audio = mutagen.File(file_path, easy=False)
         if audio is None:
             return {}
-        result = {}
+        result: Dict[str, Any] = {}
         if isinstance(audio, mutagen.flac.FLAC):
             if audio.get('title'):
                 result['title'] = audio['title'][0]
@@ -422,13 +528,17 @@ def _read_source_metadata(file_path: str) -> dict:
         return {}
 
 
-def _embed_audio_metadata(output_path: str, fmt, source_meta: dict = None) -> None:
+def _embed_audio_metadata(
+    output_path: str,
+    fmt: Optional[AudioFormat],
+    source_meta: Optional[Dict[str, Any]] = None,
+) -> None:
     """将元数据写入输出音频文件，或保留音频流中已有的标签。
 
     Args:
-        output_path: 输出文件路径
-        fmt: 格式对象（NCMFormat 等）
-        source_meta: 从源文件预读取的元数据（用于 mflac/mgg 等无独立元数据源的格式）
+        output_path: 输出文件路径。
+        fmt: 格式对象（NCMFormat 等），可以为 None。
+        source_meta: 从源文件预读取的元数据（用于 mflac/mgg 等无独立元数据源的格式）。
     """
     # 提取 NCM 元数据（如果有）
     meta = None
@@ -538,7 +648,8 @@ def _embed_audio_metadata(output_path: str, fmt, source_meta: dict = None) -> No
 # CLI 入口
 # ──────────────────────────────────────────────
 
-def main():
+def main() -> None:
+    """CLI 入口函数。"""
     parser = argparse.ArgumentParser(
         description="音频解密工具 — 支持 NCM (网易云) 和 mflac (QQ 音乐)",
         formatter_class=argparse.RawDescriptionHelpFormatter,

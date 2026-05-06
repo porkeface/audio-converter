@@ -1,7 +1,7 @@
 """
-音频转换工具 - GUI 模块（向后兼容包装器）
+音频转换工具 UI 模块
 
-此文件保留用于向后兼容。新的代码应该使用 src.ui 子模块。
+包含应用程序的图形用户界面组件。
 """
 
 import customtkinter as ctk
@@ -13,7 +13,19 @@ try:
 except ImportError:
     DRAG_DROP_AVAILABLE = False
 
-from .ui.app import AudioConverterUI
+from .styles import COLORS, OUTPUT_FORMATS, WINDOW_TITLE, WINDOW_SIZE
+from .components import FileCard
+from .app import AudioConverterUI
+
+__all__ = [
+    'COLORS',
+    'OUTPUT_FORMATS',
+    'WINDOW_TITLE',
+    'WINDOW_SIZE',
+    'FileCard',
+    'AudioConverterUI',
+    'main',
+]
 
 
 # 兼容性启动类
@@ -34,7 +46,3 @@ def main():
     app_root = CTkApp()
     app = AudioConverterUI(app_root)
     app_root.mainloop()
-
-
-if __name__ == "__main__":
-    main()

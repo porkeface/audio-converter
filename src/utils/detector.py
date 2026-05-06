@@ -37,7 +37,16 @@ def detect_format(file_path: str) -> Optional[AudioFormat]:
 
 
 def is_standard_audio(file_path: Path) -> bool:
-    """检查是否是标准音频格式（不需要解密）。"""
+    """检查是否是标准音频格式（不需要解密）。
+
+    通过读取文件头的魔数来判断音频格式。
+
+    Args:
+        file_path: 音频文件路径。
+
+    Returns:
+        True 如果是标准音频格式，否则 False。
+    """
     with open(file_path, 'rb') as f:
         header = f.read(4)
 

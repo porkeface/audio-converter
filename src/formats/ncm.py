@@ -29,7 +29,7 @@ import struct
 import base64
 import json
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Any, Optional, Dict
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
@@ -47,11 +47,17 @@ class NCMFormat(AudioFormat):
     FORMAT_NAME = "NetEase NCM"
 
     # 核心密钥 (用于解密密钥数据)
+    # 来源: 逆向工程网易云音乐客户端获取
+    # 用途: AES-128-ECB 解密 NCM 文件中的加密密钥数据
     # 十六进制: 687A4852416D736F356B496E62617857
+    # ASCII: hzHRAmso5kInbaxW
     CORE_KEY = bytes.fromhex('687A4852416D736F356B496E62617857')
 
     # 元数据密钥 (用于解密元数据)
+    # 来源: 逆向工程网易云音乐客户端获取
+    # 用途: AES-128-ECB 解密 NCM 文件中的歌曲元数据 (JSON 格式)
     # 十六进制: 2331346C6A6B5F215C5D2630553C2728
+    # ASCII: #14ljk_!\]&0U<'
     META_KEY = bytes.fromhex('2331346C6A6B5F215C5D2630553C2728')
 
     def __init__(self, file_path: str):
@@ -267,16 +273,18 @@ class NCMFormat(AudioFormat):
 
         return "unknown"
 
-    def get_format_info(self) -> dict:
+    def get_format_info(self) -> Dict[str, Any]:
+        """获取格式信息。
+
+        Returns:
+            包含格式信息的字典。
         """
-        获取格式信息
-        """
-        info = {
+        info: Dict[str, Any] = {
             "format": "NCM",
             "platform": "NetEase Cloud Music (网易云音乐)",
             "encryption": "RC4 (音频) + AES-128-ECB (密钥)",
             "file_path": str(self.file_path),
-            "file_size": self.file_path.stat().size,
+            "file_size": self.file_path.stat().st_size,
             "original_format": self._original_format or "需要解密后检测",
         }
 

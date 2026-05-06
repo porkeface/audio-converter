@@ -13,196 +13,36 @@ import os
 import sys
 import time
 import json
+from pathlib import Path
+from typing import Tuple, Optional
 import frida
 
-# Frida JavaScript payload extracted from sunwoo.exe
-FRIDA_SCRIPT = r"""
-var _globalCache = {};
 
-function getCachedNativeFunction(name, addr, retType, argTypes, abi) {
-    if (!_globalCache[name]) {
-        _globalCache[name] = new NativeFunction(addr, retType, argTypes, abi);
-    }
-    return _globalCache[name];
-}
+def _load_frida_script() -> str:
+    """Load Frida JavaScript payload from external file.
 
-function clearGlobalCache() {
-    _globalCache = {};
-}
+    Returns:
+        The JavaScript source code for the Frida script.
 
-const TARGET_DLL = "QQMusicCommon.dll";
-
-var targetModule = Process.getModuleByName(TARGET_DLL);
-
-var EncAndDesMediaFileConstructorAddr = targetModule.getExportByName(
-    "??0EncAndDesMediaFile@@QAE@XZ"
-);
-var EncAndDesMediaFileDestructorAddr = targetModule.getExportByName(
-    "??1EncAndDesMediaFile@@QAE@XZ"
-);
-var EncAndDesMediaFileOpenAddr = targetModule.getExportByName(
-    "?Open@EncAndDesMediaFile@@QAE_NPB_W_N1@Z"
-);
-var EncAndDesMediaFileGetSizeAddr = targetModule.getExportByName(
-    "?GetSize@EncAndDesMediaFile@@QAEKXZ"
-);
-var EncAndDesMediaFileReadAddr = targetModule.getExportByName(
-    "?Read@EncAndDesMediaFile@@QAEKPAEK_J@Z"
-);
-
-var EncAndDesMediaFileConstructor = getCachedNativeFunction(
-    "Constructor", EncAndDesMediaFileConstructorAddr,
-    "pointer", ["pointer"], "thiscall"
-);
-var EncAndDesMediaFileDestructor = getCachedNativeFunction(
-    "Destructor", EncAndDesMediaFileDestructorAddr,
-    "void", ["pointer"], "thiscall"
-);
-var EncAndDesMediaFileOpen = getCachedNativeFunction(
-    "Open", EncAndDesMediaFileOpenAddr,
-    "bool", ["pointer", "pointer", "bool", "bool"], "thiscall"
-);
-var EncAndDesMediaFileGetSize = getCachedNativeFunction(
-    "GetSize", EncAndDesMediaFileGetSizeAddr,
-    "uint32", ["pointer"], "thiscall"
-);
-var EncAndDesMediaFileRead = getCachedNativeFunction(
-    "Read", EncAndDesMediaFileReadAddr,
-    "uint", ["pointer", "pointer", "uint32", "uint64"], "thiscall"
-);
-
-const kernel32 = Process.getModuleByName("kernel32.dll");
-var CreateFileW = getCachedNativeFunction(
-    "CreateFileW", kernel32.getExportByName("CreateFileW"),
-    'pointer', ['pointer', 'uint', 'uint', 'pointer', 'uint', 'uint', 'pointer']
-);
-var WriteFile = getCachedNativeFunction(
-    "WriteFile", kernel32.getExportByName("WriteFile"),
-    'bool', ['pointer', 'pointer', 'uint', 'pointer', 'pointer']
-);
-var CloseHandle = getCachedNativeFunction(
-    "CloseHandle", kernel32.getExportByName("CloseHandle"),
-    'bool', ['pointer']
-);
-
-function convertToWideChar(str) {
-    return Memory.allocUtf16String(str);
-}
-
-rpc.exports = {
-    decrypt: function (srcFileName, tmpFileName) {
-        var EncAndDesMediaFileObject = null;
-        var fileHandle = null;
-        var buffer = null;
-        var bytesWritten = null;
-
-        try {
-            console.log("[+] start task: ", srcFileName, " -> ", tmpFileName);
-
-            EncAndDesMediaFileObject = Memory.alloc(0x28);
-            EncAndDesMediaFileConstructor(EncAndDesMediaFileObject);
-
-            var fileNameUtf16 = convertToWideChar(srcFileName);
-            var result = EncAndDesMediaFileOpen(EncAndDesMediaFileObject, fileNameUtf16, 1, 0);
-
-            if (!result) {
-                console.log("[-] open file failed");
-                EncAndDesMediaFileDestructor(EncAndDesMediaFileObject);
-                return { status: 1, error: "failed to open file" };
-            }
-
-            var fileSize = EncAndDesMediaFileGetSize(EncAndDesMediaFileObject);
-            console.log("[+] source file size: ", fileSize);
-
-            if (fileSize === 0) {
-                EncAndDesMediaFileDestructor(EncAndDesMediaFileObject);
-                return { status: 1, error: "file size is 0" };
-            }
-
-            var tmpFileNameUtf16 = convertToWideChar(tmpFileName);
-            const GENERIC_WRITE = 0x40000000;
-            const FILE_SHARE_READ = 0x00000001;
-            const CREATE_ALWAYS = 2;
-            const FILE_ATTRIBUTE_NORMAL = 0x80;
-
-            fileHandle = CreateFileW(
-                tmpFileNameUtf16, GENERIC_WRITE, FILE_SHARE_READ,
-                ptr(0), CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, ptr(0)
-            );
-
-            const INVALID_HANDLE_VALUE = ptr(-1);
-            if (fileHandle.equals(INVALID_HANDLE_VALUE)) {
-                EncAndDesMediaFileDestructor(EncAndDesMediaFileObject);
-                return { status: 1, error: "failed to create output file" };
-            }
-
-            const CHUNK_SIZE = 512 * 1024;
-            buffer = Memory.alloc(CHUNK_SIZE);
-            bytesWritten = Memory.alloc(8);
-            var totalProcessed = 0;
-
-            while (totalProcessed < fileSize) {
-                var currentChunkSize = Math.min(CHUNK_SIZE, fileSize - totalProcessed);
-                var readSize = EncAndDesMediaFileRead(
-                    EncAndDesMediaFileObject, buffer, currentChunkSize, totalProcessed
-                );
-
-                if (readSize !== currentChunkSize) {
-                    CloseHandle(fileHandle);
-                    EncAndDesMediaFileDestructor(EncAndDesMediaFileObject);
-                    return { status: 1, error: "read chunk failed" };
-                }
-
-                var writeResult = WriteFile(
-                    fileHandle, buffer, currentChunkSize, bytesWritten, ptr(0)
-                );
-
-                if (!writeResult) {
-                    CloseHandle(fileHandle);
-                    EncAndDesMediaFileDestructor(EncAndDesMediaFileObject);
-                    return { status: 1, error: "write failed" };
-                }
-
-                totalProcessed += currentChunkSize;
-            }
-
-            console.log("[+] decrypt success, total processed:", totalProcessed, "bytes");
-
-            try {
-                if (fileHandle && !fileHandle.equals(ptr(-1))) {
-                    CloseHandle(fileHandle);
-                    fileHandle = null;
-                }
-                if (EncAndDesMediaFileObject) {
-                    EncAndDesMediaFileDestructor(EncAndDesMediaFileObject);
-                    EncAndDesMediaFileObject = null;
-                }
-                buffer = null;
-                bytesWritten = null;
-                clearGlobalCache();
-                if (typeof gc === 'function') { gc(); }
-            } catch (cleanupError) {}
-
-            return { status: 0 };
-
-        } catch (error) {
-            console.log("[-] decrypt error:", error);
-            try {
-                if (fileHandle && !fileHandle.equals(ptr(-1))) { CloseHandle(fileHandle); }
-                if (EncAndDesMediaFileObject) { EncAndDesMediaFileDestructor(EncAndDesMediaFileObject); }
-                buffer = null;
-                bytesWritten = null;
-                clearGlobalCache();
-            } catch (cleanupError) {}
-            return { status: 1, error: error.toString() };
-        }
-    },
-};
-"""
+    Raises:
+        FileNotFoundError: If the script file cannot be found.
+    """
+    script_path = Path(__file__).parent / "frida_script.js"
+    if not script_path.exists():
+        raise FileNotFoundError(f"Frida script not found: {script_path}")
+    return script_path.read_text(encoding="utf-8")
 
 
-def find_qqmusic_process():
-    """Find QQ Music process."""
+# Load script once at module level for efficiency
+FRIDA_SCRIPT = _load_frida_script()
+
+
+def find_qqmusic_process() -> Tuple[Optional[int], Optional[str]]:
+    """Find QQ Music process.
+
+    Returns:
+        Tuple of (pid, process_name) or (None, None) if not found.
+    """
     try:
         device = frida.get_local_device()
         processes = device.enumerate_processes()
@@ -214,26 +54,42 @@ def find_qqmusic_process():
     return None, None
 
 
-def attach_and_decrypt(pid, src_path, dst_path):
-    """Attach to QQ Music and decrypt a file using Frida."""
+def attach_and_decrypt(pid: int, src_path: str, dst_path: str) -> dict:
+    """Attach to QQ Music and decrypt a file using Frida.
+
+    Args:
+        pid: Process ID of QQ Music.
+        src_path: Path to the encrypted mflac file.
+        dst_path: Path for the decrypted output file.
+
+    Returns:
+        Dictionary with 'status' (0 for success) and optional 'error'.
+    """
     session = frida.attach(pid)
     script = session.create_script(FRIDA_SCRIPT)
     script.load()
 
-    api = script.exports_sync
-    result = api.decrypt(src_path, dst_path)
-
-    script.unload()
-    session.detach()
+    try:
+        api = script.exports_sync
+        result = api.decrypt(src_path, dst_path)
+    finally:
+        script.unload()
+        session.detach()
 
     return result
 
 
-def decode_mflac(input_path, output_path=None):
-    """
-    Decode an mflac file to flac using Frida + QQ Music's DLL.
+def decode_mflac(input_path: str, output_path: Optional[str] = None) -> Tuple[bool, str]:
+    """Decode an mflac file to flac using Frida + QQ Music's DLL.
 
     Requires QQ Music to be running.
+
+    Args:
+        input_path: Path to the encrypted mflac file.
+        output_path: Optional path for the output file. Defaults to input_name.flac.
+
+    Returns:
+        Tuple of (success, output_path_or_error_message).
     """
     # 使用绝对路径，QQ Music 的 DLL 需要完整路径才能打开文件
     input_path = os.path.abspath(input_path)
@@ -271,8 +127,17 @@ def decode_mflac(input_path, output_path=None):
         return False, error
 
 
-def batch_decode(input_dir, output_dir=None):
-    """Batch decode all mflac files in a directory."""
+def batch_decode(input_dir: str, output_dir: Optional[str] = None) -> None:
+    """Batch decode all mflac files in a directory.
+
+    Args:
+        input_dir: Directory containing encrypted mflac/mgg files.
+        output_dir: Optional output directory. Defaults to input_dir/decoded.
+
+    Raises:
+        NotADirectoryError: If input_dir does not exist.
+        RuntimeError: If QQ Music is not running.
+    """
     if not os.path.isdir(input_dir):
         raise NotADirectoryError(f"Directory not found: {input_dir}")
 
@@ -297,30 +162,33 @@ def batch_decode(input_dir, output_dir=None):
     session = frida.attach(pid)
     script = session.create_script(FRIDA_SCRIPT)
     script.load()
-    api = script.exports_sync
 
-    success_count = 0
-    for fname in mflac_files:
-        src = os.path.join(input_dir, fname)
-        dst = os.path.join(output_dir, os.path.splitext(fname)[0] + ".flac")
-        print(f"\nDecrypting: {fname}")
+    try:
+        api = script.exports_sync
 
-        result = api.decrypt(src, dst)
+        success_count = 0
+        for fname in mflac_files:
+            src = os.path.join(input_dir, fname)
+            dst = os.path.join(output_dir, os.path.splitext(fname)[0] + ".flac")
+            print(f"\nDecrypting: {fname}")
 
-        if result.get('status') == 0:
-            size = os.path.getsize(dst) if os.path.exists(dst) else 0
-            print(f"  Success! ({size:,} bytes)")
-            success_count += 1
-        else:
-            print(f"  Failed: {result.get('error', 'unknown')}")
+            result = api.decrypt(src, dst)
 
-    script.unload()
-    session.detach()
+            if result.get('status') == 0:
+                size = os.path.getsize(dst) if os.path.exists(dst) else 0
+                print(f"  Success! ({size:,} bytes)")
+                success_count += 1
+            else:
+                print(f"  Failed: {result.get('error', 'unknown')}")
 
-    print(f"\nDone: {success_count}/{len(mflac_files)} files decrypted")
+        print(f"\nDone: {success_count}/{len(mflac_files)} files decrypted")
+    finally:
+        script.unload()
+        session.detach()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """CLI entry point for Frida-based mflac decryption."""
     if len(sys.argv) < 2:
         print("Usage:")
         print("  python frida_decrypt.py <input.mflac> [output.flac]")
@@ -335,3 +203,7 @@ if __name__ == "__main__":
         input_path = sys.argv[1]
         output_path = sys.argv[2] if len(sys.argv) > 2 else None
         decode_mflac(input_path, output_path)
+
+
+if __name__ == "__main__":
+    main()
